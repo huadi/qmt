@@ -99,8 +99,14 @@ def _serve():
 
     # 3. 阻塞主线程；未来在此注册 QMT 回调（行情订阅、订单回报、通知推送）
     #    xt_trader.register_callback(...) / xtdata.subscribe_quote(...)
+    #
+    #    注意：threading.Event().wait() 不带超时时在 Windows 上无法被
+    #    Ctrl+C 打断，必须给一个超时值（哪怕很大），让主线程周期性返回
+    #    控制权给解释器，信号处理器才能抛出 KeyboardInterrupt。
+    stop_event = threading.Event()
     try:
-        threading.Event().wait()
+        while not stop_event.wait(1):
+            pass
     except (KeyboardInterrupt, SystemExit):
         logger.info('正在停止 daemon...')
     finally:
