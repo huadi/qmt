@@ -5,8 +5,9 @@ QMT 连接模块
 负责 xtquant 导入和连接。配置从 __init__ 获取，sys.path 由 __main__ 设置。
 """
 import logging
+import random
 
-from . import ACCOUNT_ID, MINI_PATH, SESSION_ID
+from . import ACCOUNT_ID, MINI_PATH
 
 from xtquant.xttrader import XtQuantTrader
 from xtquant.xttype import StockAccount
@@ -17,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 def connect():
     """连接 mini QMT，返回 xt_trader"""
-    xt_trader = XtQuantTrader(MINI_PATH, SESSION_ID)
+    session_id = random.randint(100000, 999999)
+    xt_trader = XtQuantTrader(MINI_PATH, session_id)
     xt_trader.start()
     ret = xt_trader.connect()
     if ret != 0:
