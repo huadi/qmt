@@ -1,30 +1,26 @@
 # AGENTS.md
 
-Trading-automation scripts for QMT (迅投极速策略交易系统) on Chinese A-share markets, using the `xtquant` API. Two scripts — no package, no tests, no CI.
+Trading-automation scripts for QMT (迅投极速策略交易系统) on Chinese A-share markets, using the `xtquant` API. One package (`app/`) — no tests, no CI.
 
 ## Module structure
 
-- **`qmt.py`** — shared connection module. Sets up `sys.path` to locate `xtquant` (which ships with the QMT client, not on PyPI), holds config (`ACCOUNT_ID`, `MINI_PATH`, `SESSION_ID`), and exposes `connect()`, `xtdata`, `xtconstant`. All standalone scripts import from here.
-- **`trade.py`** — manual order placement CLI (`python trade.py buy 隆基绿能 12.40 800`). Imports `connect`, `xtdata`, `xtconstant` from `qmt`. Maintains a local `stock_names.json` cache for name→code resolution via `xtdata.get_stock_list_in_sector` / `xtdata.get_instrument_detail`.
+- **`app/__init__.py`** — package initialization. Reads `config.toml` and exposes `ACCOUNT_ID`, `MINI_PATH`, `SESSION_ID` as package-level variables.
+- **`app/__main__.py`** — entry point for `python -m app`. Adds QMT's `bin.x64\Lib\site-packages` to `sys.path` and dispatches subcommands (e.g. `python -m app trade buy 隆基绿能 12.40 800`).
+- **`app/qmt.py`** — QMT connection module. Imports config from `__init__`, imports `xtquant` (`XtQuantTrader`, `StockAccount`, `xtconstant`, `xtdata`), and defines `connect()`. Other modules import from here via `from .qmt import connect, xtdata, xtconstant`. Does not manage `sys.path`.
+- **`app/db.py`** — database access module. Manages the SQLite connection (`data/sqlite.db`) and all `stocks` table operations (`get_conn`, `init_db`, `upsert_stock`, `replace_all`, `find_code_by_name`, `search_codes_by_keyword`).
+- **`app/trade.py`** — manual order placement logic. Imports `connect`, `xtdata`, `xtconstant` from `app.qmt` and db functions from `app.db`. Maintains a local SQLite cache (`data/sqlite.db`) for name→code resolution via `xtdata.get_stock_list_in_sector` / `xtdata.get_instrument_detail`. Exposes `main(argv)` for `__main__` to call; not run directly.
 
-## Encoding
+## Run
 
-- Both scripts are **UTF-8**.
+```
+python -m app init                          # 初始化 db（建表 + 刷新股票名称）
+python -m app trade buy  隆基绿能 12.40 800
+python -m app trade sell 隆基绿能 12.40 800
+```
 
 ## Dependencies & environment
 
-- The execution runtime is the **QMT client's bundled Python**, not this repo's `.venv`. `xtquant` ships with the QMT installation and is **not on PyPI** — do not `pip install xtquant`. `qmt.py` adds the client's `bin.x64\Lib\site-packages` to `sys.path` automatically.
-- The repo `.venv` (Python 3.10.11) only holds data-science deps for local syntax/import checks: `pandas 2.3.3`, `numpy 2.2.6`, `TA-Lib 0.7.0`. The QMT client bundles its own Python 3.10 with `xtquant` preinstalled under `bin.x64\Lib\site-packages`.
+- This project runs on its own Python (the repo `.venv`), separate from QMT's bundled Python. All code is standard Python — only `xtquant` is borrowed from the QMT client.
+- `xtquant` ships with the QMT installation and is **not on PyPI** — do not `pip install xtquant`. `app/__main__.py` adds the client's `bin.x64\Lib\site-packages` to `sys.path` automatically so `xtquant` can be imported.
+- The repo `.venv` holds third-party deps: `pandas`, `numpy`, `TA-Lib`, `tomli`. These are the project's real runtime dependencies, not just for syntax checks.
 - No `requirements.txt` / `pyproject.toml` exists.
-
-## No build / test / lint
-
-There is no test suite, lint config, typecheck, or build step. Verify changes by careful reading and, for the standalone scripts only, importing them under the QMT-provided Python (or the repo `.venv` after `qmt.py` sets up the path).
-
-## Machine-specific / sensitive values
-
-- `qmt.py:25` (`ACCOUNT_ID`) and `qmt.py:26` (`MINI_PATH`) hardcode a real account ID and the mini QMT `userdata_mini` path. These are local to this machine — never commit real account IDs.
-
-## Repo hygiene
-
-A `.gitignore` exists covering Windows system files, IntelliJ/PyCharm state (`.idea/`), and Python artifacts (`.venv/`, `__pycache__/`, `stock_names.json`). `.idea/` was removed from the index via `git rm -r --cached`.

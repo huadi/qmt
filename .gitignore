@@ -25,6 +25,7 @@ env/
 *.egg-info/
 stock_names.json
 config.toml
+data/
 .eggs/
 dist/
 build/
