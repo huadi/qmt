@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def connect():
-    """连接 mini QMT 并订阅账户，返回 (xt_trader, acc)"""
+    """连接 mini QMT，返回 xt_trader"""
     xt_trader = XtQuantTrader(MINI_PATH, SESSION_ID)
     xt_trader.start()
     ret = xt_trader.connect()
@@ -25,4 +25,4 @@ def connect():
     acc = StockAccount(ACCOUNT_ID)
     xt_trader.subscribe(acc)
     logger.info(f'连接成功, 订阅账户: {ACCOUNT_ID}')
-    return xt_trader, acc
+    return xt_trader

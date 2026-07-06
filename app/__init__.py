@@ -5,6 +5,7 @@ app 包初始化模块
 负责系统级初始化：读取 config.toml，暴露 ACCOUNT_ID / MINI_PATH / SESSION_ID。
 """
 import os
+import random
 
 try:
     import tomllib  # Python 3.11+
@@ -22,6 +23,8 @@ if not os.path.exists(_CONFIG_FILE):
 with open(_CONFIG_FILE, 'rb') as _f:
     _cfg = tomllib.load(_f)
 
-ACCOUNT_ID = _cfg['account_id']
-MINI_PATH = _cfg['mini_path']
-SESSION_ID = _cfg['session_id']
+_qmt = _cfg['qmt']
+
+ACCOUNT_ID = _qmt['account_id']
+MINI_PATH = _qmt['mini_path']
+SESSION_ID = _qmt.get('session_id') or random.randint(100000, 999999)

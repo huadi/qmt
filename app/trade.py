@@ -18,7 +18,9 @@ import argparse
 import logging
 
 from .qmt import connect, xtdata, xtconstant
+from . import ACCOUNT_ID
 from .db import init_db, replace_all, find_code_by_name, search_codes_by_keyword
+from xtquant.xttype import StockAccount
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +75,9 @@ def resolve_code(name_or_code):
     raise ValueError(f'未找到股票: {name_or_code}，请运行 `python -m app init` 初始化数据库')
 
 
-def place_order(xt_trader, acc, code, direction, price, volume):
-    """下单并打印委托结果"""
+def place_order(xt_trader, code, direction, price, volume):
+    """提交委托，返回订单号（失败则 sys.exit）"""
+    acc = StockAccount(ACCOUNT_ID)
     order_type = xtconstant.STOCK_BUY if direction == 'buy' else xtconstant.STOCK_SELL
     action = '买入' if direction == 'buy' else '卖出'
     logger.info(f'{action} {code} 价格 {price} 数量 {volume}股 ...')
@@ -86,14 +89,22 @@ def place_order(xt_trader, acc, code, direction, price, volume):
     else:
         logger.error(f'委托提交失败, 返回: {order_id}')
         sys.exit(1)
+    return order_id
 
+
+def check_order(xt_trader, order_id, code):
+    """回查委托状态并打印成交情况"""
+    acc = StockAccount(ACCOUNT_ID)
     time.sleep(1)
     orders = xt_trader.query_stock_orders(acc)
-    if orders:
-        for o in orders:
-            if str(o.order_id) == str(order_id) or o.stock_code == code:
-                logger.info(f'委托状态: {o.status_msg}, 已成交: {o.traded_volume}股')
-                break
+    if not orders:
+        logger.warning(f'未查到任何委托记录, 请在客户端确认订单号 {order_id}')
+        return
+    for o in orders:
+        if str(o.order_id) == str(order_id) or o.stock_code == code:
+            logger.info(f'委托状态: {o.status_msg}, 已成交: {o.traded_volume}股')
+            return
+    logger.warning(f'未找到订单号 {order_id}, 请在客户端确认')
 
 
 def main(argv=None):
@@ -112,8 +123,9 @@ def main(argv=None):
     if args.volume % 100 != 0:
         logger.warning(f'数量{args.volume}不是100的整数倍, A股需按手(100股)交易')
 
-    xt_trader, acc = connect()
+    xt_trader = connect()
     try:
-        place_order(xt_trader, acc, code, args.direction, args.price, args.volume)
+        order_id = place_order(xt_trader, code, args.direction, args.price, args.volume)
+        check_order(xt_trader, order_id, code)
     finally:
         xt_trader.stop()
