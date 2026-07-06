@@ -2,11 +2,11 @@
 """
 国债逆回购自动下单（业务逻辑 + 定时 job 函数）
 
-每个交易日的 14:58，将账户剩余可用资金用于购买1天期国债逆回购，
-自动比较沪市(204001)与深市(131810)利率，选择利率更高的市场卖出。
+每个交易日的 9:32，固定下单 10 张 1 天期国债逆回购，
+比较沪市(204001)与深市(131810)利率，选择利率更高的市场，以买1价委托卖出。
 
 用法:
-    python -m app serve             # daemon 模式：启动调度器，每个交易日 14:58 自动下单
+    python -m app serve             # daemon 模式：启动调度器，每个交易日 9:32 自动下单
     python -m app repo --now        # 立即执行一次逆回购（测试/手动触发）
 
 定时调度由 `python -m app serve` 统一管理（见 __main__.py），本模块只提供
@@ -22,9 +22,7 @@ import logging
 import argparse
 
 from .qmt import connect, xtdata
-from . import ACCOUNT_ID
 from .trade import place_order
-from xtquant.xttype import StockAccount
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +31,8 @@ REPO_SH = '204001.SH'   # 沪市 GC001
 REPO_SZ = '131810.SZ'   # 深市 R-001
 REPO_CODES = [REPO_SH, REPO_SZ]
 
-REPO_FACE_VALUE = 100    # 每张面值（元）
-REPO_STEP = 10           # 委托数量递增单位（张）
-REPO_MIN_LOTS = 1000     # 最小委托量（张），即 10 万元起
-CASH_BUFFER = 1000       # 保留资金缓冲（元），应对手续费等
-
-SCHEDULE_TIME = (14, 58)   # 定时执行时刻
+REPO_VOLUME = 10          # 固定委托数量（张）
+SCHEDULE_TIME = (9, 32)   # 定时执行时刻
 
 
 # ============================================================
@@ -131,29 +125,21 @@ def select_market(rates):
 
 
 # ============================================================
-#  资金查询与下单
+#  买1价查询
 # ============================================================
 
-def get_available_cash(xt_trader):
-    """查询账户可用资金"""
-    acc = StockAccount(ACCOUNT_ID)
-    asset = xt_trader.query_stock_asset(acc)
-    if asset is None:
-        raise Exception('查询账户资产失败')
-    logger.info(f'账户可用资金: {asset.cash} 元')
-    return asset.cash
-
-
-def calc_volume(cash):
-    """根据可用资金计算逆回购委托数量（张），向下取整到递增单位"""
-    usable = cash - CASH_BUFFER
-    if usable < REPO_FACE_VALUE * REPO_MIN_LOTS:
-        logger.warning(f'可用资金 {cash} 元不足 {REPO_FACE_VALUE * REPO_MIN_LOTS} 元（最小委托量），跳过')
-        return 0
-    lots = int(usable // REPO_FACE_VALUE)
-    lots = lots // REPO_STEP * REPO_STEP
-    logger.info(f'计算委托数量: {lots} 张（{lots * REPO_FACE_VALUE} 元）')
-    return lots
+def get_bid_price(code):
+    """获取指定逆回购的买1价（用于下单）"""
+    try:
+        ticks = xtdata.get_full_tick([code])
+        tick = (ticks or {}).get(code)
+        if tick:
+            bids = tick.get('bidPrice')
+            if bids and len(bids) > 0 and bids[0] > 0:
+                return bids[0]
+    except Exception as e:
+        logger.warning(f'获取 {code} 买1价失败: {e}')
+    return None
 
 
 # ============================================================
@@ -161,22 +147,22 @@ def calc_volume(cash):
 # ============================================================
 
 def run_repo():
-    """执行一次国债逆回购：比较利率 -> 选市场 -> 计算数量 -> 下单
+    """执行一次国债逆回购：比较利率 -> 选市场 -> 取买1价 -> 固定10张下单
 
     使用共享的 QMT 连接（单例），不负责连接的建立与断开。
     """
     xt_trader = connect()
     rates = get_repo_rates()
     code, rate = select_market(rates)
-    cash = get_available_cash(xt_trader)
-    volume = calc_volume(cash)
-    if volume <= 0:
+    bid = get_bid_price(code)
+    if not bid:
+        logger.warning(f'未获取到 {code} 买1价，跳过下单')
         return
-    place_order(xt_trader, code, 'sell', rate, volume, remark='国债逆回购', unit='张')
+    place_order(xt_trader, code, 'sell', bid, REPO_VOLUME, remark='qmt auto', unit='张')
 
 
 def scheduled_repo():
-    """APScheduler 定时任务入口：交易日 14:58 执行逆回购"""
+    """APScheduler 定时任务入口：交易日 9:32 执行逆回购"""
     if not is_trading_day():
         logger.info('今日非交易日，跳过')
         return
