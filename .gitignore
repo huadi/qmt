@@ -1,0 +1,38 @@
+# ===== Windows system files =====
+Thumbs.db
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# ===== IntelliJ IDEA / PyCharm =====
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+stock_names.json
+config.toml
+.eggs/
+dist/
+build/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

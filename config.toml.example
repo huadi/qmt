@@ -1,0 +1,4 @@
+# QMT 连接配置示例 —— 复制为 config.toml 并填写本机真实值
+account_id = "你的资金账号"
+mini_path = r"C:\迅投极速策略交易系统交易终端 太平洋证券QMT实盘\userdata_mini"
+session_id = 123456
