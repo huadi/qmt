@@ -95,7 +95,7 @@ def place_order(xt_trader, code, direction, price, volume):
 def check_order(xt_trader, order_id, code):
     """回查委托状态并打印成交情况"""
     acc = StockAccount(ACCOUNT_ID)
-    time.sleep(1)
+
     orders = xt_trader.query_stock_orders(acc)
     if not orders:
         logger.warning(f'未查到任何委托记录, 请在客户端确认订单号 {order_id}')
@@ -126,6 +126,7 @@ def main(argv=None):
     xt_trader = connect()
     try:
         order_id = place_order(xt_trader, code, args.direction, args.price, args.volume)
+        time.sleep(1)
         check_order(xt_trader, order_id, code)
     finally:
         xt_trader.stop()
