@@ -75,20 +75,20 @@ def resolve_code(name_or_code):
     raise ValueError(f'未找到股票: {name_or_code}，请运行 `python -m app init` 初始化数据库')
 
 
-def place_order(xt_trader, code, direction, price, volume):
-    """提交委托，返回订单号（失败则 sys.exit）"""
+def place_order(xt_trader, code, direction, price, volume, remark='手动下单', unit='股'):
+    """提交委托，返回订单号；失败抛 RuntimeError"""
     acc = StockAccount(ACCOUNT_ID)
     order_type = xtconstant.STOCK_BUY if direction == 'buy' else xtconstant.STOCK_SELL
     action = '买入' if direction == 'buy' else '卖出'
-    logger.info(f'{action} {code} 价格 {price} 数量 {volume}股 ...')
+    logger.info(f'{action} {code} 价格 {price} 数量 {volume}{unit} ...')
     order_id = xt_trader.order_stock(
-        acc, code, order_type, volume, xtconstant.FIX_PRICE, price, '手动下单'
+        acc, code, order_type, volume, xtconstant.FIX_PRICE, price, remark
     )
     if order_id is not None and order_id >= 0:
         logger.info(f'委托提交成功, 订单号: {order_id}')
     else:
         logger.error(f'委托提交失败, 返回: {order_id}')
-        sys.exit(1)
+        raise RuntimeError(f'order_stock 返回 {order_id}')
     return order_id
 
 
@@ -128,5 +128,5 @@ def main(argv=None):
         order_id = place_order(xt_trader, code, args.direction, args.price, args.volume)
         time.sleep(1)
         check_order(xt_trader, order_id, code)
-    finally:
-        xt_trader.stop()
+    except RuntimeError:
+        sys.exit(1)

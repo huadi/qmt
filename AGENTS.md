@@ -9,6 +9,7 @@ Trading-automation scripts for QMT (迅投极速策略交易系统) on Chinese A
 - **`app/qmt.py`** — QMT connection module. Imports config from `__init__`, imports `xtquant` (`XtQuantTrader`, `StockAccount`, `xtconstant`, `xtdata`), and defines `connect()`. Other modules import from here via `from .qmt import connect, xtdata, xtconstant`. Does not manage `sys.path`.
 - **`app/db.py`** — database access module. Manages the SQLite connection (`data/sqlite.db`) and all `stocks` table operations (`get_conn`, `init_db`, `upsert_stock`, `replace_all`, `find_code_by_name`, `search_codes_by_keyword`).
 - **`app/trade.py`** — manual order placement logic. Imports `connect`, `xtdata`, `xtconstant` from `app.qmt` and db functions from `app.db`. Maintains a local SQLite cache (`data/sqlite.db`) for name→code resolution via `xtdata.get_stock_list_in_sector` / `xtdata.get_instrument_detail`. Exposes `main(argv)` for `__main__` to call; not run directly.
+- **`app/repo.py`** — treasury bond reverse repo (国债逆回购) scheduled task. Imports `connect`, `xtdata`, `xtconstant` from `app.qmt`. At 14:58 on each trading day, compares the 1-day repo yield of Shanghai (`204001.SH`) vs Shenzhen (`131810.SZ`), sells the higher-rate market using the account's remaining cash. Self-schedules (waits until 14:58) by default; `--now` executes immediately. Exposes `main(argv)` for `__main__` to call; not run directly.
 
 ## Run
 
@@ -16,6 +17,8 @@ Trading-automation scripts for QMT (迅投极速策略交易系统) on Chinese A
 python -m app init                          # 初始化 db（建表 + 刷新股票名称）
 python -m app trade buy  隆基绿能 12.40 800
 python -m app trade sell 隆基绿能 12.40 800
+python -m app repo                          # 国债逆回购定时任务（14:58 自动下单）
+python -m app repo --now                    # 立即执行逆回购
 ```
 
 ## Dependencies & environment

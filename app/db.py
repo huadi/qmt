@@ -13,7 +13,8 @@ _DB_FILE = os.path.join(_DB_DIR, 'sqlite.db')
 
 _CREATE_TABLE = '''
     CREATE TABLE IF NOT EXISTS stocks (
-        name  TEXT PRIMARY KEY,
+        id    INTEGER PRIMARY KEY AUTOINCREMENT,
+        name  TEXT NOT NULL UNIQUE,
         code  TEXT NOT NULL
     )
 '''
