@@ -32,7 +32,7 @@ REPO_SZ = '131810.SZ'   # 深市 R-001
 REPO_CODES = [REPO_SH, REPO_SZ]
 
 REPO_VOLUME = 10          # 固定委托数量（张）
-SCHEDULE_TIME = (9, 32)   # 定时执行时刻
+SCHEDULE_TIME = (14, 58)  # 定时执行时刻
 
 
 # ============================================================
