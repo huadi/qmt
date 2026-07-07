@@ -6,7 +6,7 @@
 比较沪市(204001)与深市(131810)利率，选择利率更高的市场，以买1价委托卖出。
 
 用法:
-    python -m app serve             # daemon 模式：启动调度器，每个交易日 9:32 自动下单
+    python -m app serve             # daemon 模式：启动调度器，每个交易日 14:58 全额资金自动下单
     python -m app repo --now        # 立即执行一次逆回购（测试/手动触发）
 
 定时调度由 `python -m app serve` 统一管理（见 __main__.py），本模块只提供
@@ -33,11 +33,11 @@ REPO_SH = '204001.SH'   # 沪市 GC001
 REPO_SZ = '131810.SZ'   # 深市 R-001
 REPO_CODES = [REPO_SH, REPO_SZ]
 
-# 委托数量单位为"手"，1手=1000元面值（沪深一致）。按可用资金全仓计算可下单手数。
-REPO_SPEC = {
-    REPO_SH: {'face': 1000, 'lot': 1, 'min': 1},
-    REPO_SZ: {'face': 1000, 'lot': 1, 'min': 1},
-}
+# 国债逆回购通用参数（沪深两市2024年5月新规后统一）
+# 申报单位为"张"，1张=100元面值，最小10张（1000元）起投，按10张整数倍申报
+REPO_FACE = 100      # 每张面值（元）
+REPO_LOT = 10        # 申报步长（张）
+REPO_MIN = 10        # 最小申报数量（张）
 SCHEDULE_TIME = (14, 58)  # 定时执行时刻
 
 
@@ -161,17 +161,23 @@ def get_available_cash(xt_trader):
     cash = getattr(asset, 'cash', None)
     if cash is None:
         raise Exception('查询账户可用资金字段失败(asset.cash is None)')
-    return float(cash)
+    cash = float(cash)
+    if cash <= 0:
+        raise Exception(f'账户可用资金异常: {cash:.2f}元（可能QMT资产数据未同步）')
+    return cash
 
 
-def calc_repo_volume(code, cash):
-    """根据可用资金计算委托数量（手），向下取整到最小委托单位"""
-    spec = REPO_SPEC[code]
-    lot_value = spec['face'] * spec['lot']
-    volume = int(cash // lot_value) * spec['lot']
-    if volume < spec['min']:
-        return 0
-    return volume
+def calc_repo_volume(cash):
+    """根据可用资金计算委托数量（张），向下取整到申报步长单位（10张）。
+
+    使用整数分计算避免浮点数精度问题：1张=100元面值，沪深两市统一10张起投、
+    按10张整数倍申报。
+    """
+    cash_fen = int(round(cash * 100))
+    face_fen = REPO_FACE * 100
+    max_shares = cash_fen // face_fen
+    volume = (max_shares // REPO_LOT) * REPO_LOT
+    return volume if volume >= REPO_MIN else 0
 
 
 # ============================================================
@@ -187,16 +193,16 @@ def run_repo():
     rates = get_repo_rates()
     code, rate = select_market(rates)
     cash = get_available_cash(xt_trader)
-    volume = calc_repo_volume(code, cash)
+    volume = calc_repo_volume(cash)
     if volume <= 0:
-        logger.warning(f'可用资金 {cash:.2f} 元不足下单 {code} 最小单位，跳过')
+        logger.warning(f'可用资金 {cash:.2f} 元不足下单 {code} 最小单位（10张/1000元），跳过')
         return
     bid = get_bid_price(code)
     if not bid:
         logger.warning(f'未获取到 {code} 买1价，跳过下单')
         return
-    logger.info(f'可用资金 {cash:.2f} 元，委托 {code} 数量 {volume} 手')
-    place_order(xt_trader, code, 'sell', bid, volume, remark='qmt auto', unit='手')
+    logger.info(f'可用资金 {cash:.2f} 元，委托 {code} 数量 {volume} 张（{volume * REPO_FACE} 元面值）')
+    place_order(xt_trader, code, 'sell', bid, volume, remark='qmt auto', unit='张')
 
 
 def scheduled_repo():
