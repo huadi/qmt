@@ -27,3 +27,6 @@ python -m app repo --now                    # 立即执行逆回购
 - `xtquant` ships with the QMT installation and is **not on PyPI** — do not `pip install xtquant`. `app/__main__.py` adds the client's `bin.x64\Lib\site-packages` to `sys.path` automatically so `xtquant` can be imported.
 - The repo `.venv` holds third-party deps: `pandas`, `numpy`, `TA-Lib`, `tomli`, `SQLAlchemy`, `APScheduler`, `requests`. These are the project's real runtime dependencies, not just for syntax checks.
 - Runtime deps are pinned in `requirements.txt` (via `pip freeze`).
+
+## About xtQuant
+The home page of xtQuant's documents is: https://dict.thinktrader.net/nativeApi/start_now.html?id=I3DJ97

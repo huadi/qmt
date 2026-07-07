@@ -2,7 +2,7 @@
 """
 国债逆回购自动下单（业务逻辑 + 定时 job 函数）
 
-每个交易日的 9:32，固定下单 10 张 1 天期国债逆回购，
+每个交易日的 14:58，用全部可用资金下单 1 天期国债逆回购，
 比较沪市(204001)与深市(131810)利率，选择利率更高的市场，以买1价委托卖出。
 
 用法:
@@ -21,8 +21,10 @@ import datetime
 import logging
 import argparse
 
+from . import config
 from .qmt import connect, xtdata
 from .trade import place_order
+from xtquant.xttype import StockAccount
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,11 @@ REPO_SH = '204001.SH'   # 沪市 GC001
 REPO_SZ = '131810.SZ'   # 深市 R-001
 REPO_CODES = [REPO_SH, REPO_SZ]
 
-REPO_VOLUME = 10          # 固定委托数量（张）
+# 委托数量单位为"手"，1手=1000元面值（沪深一致）。按可用资金全仓计算可下单手数。
+REPO_SPEC = {
+    REPO_SH: {'face': 1000, 'lot': 1, 'min': 1},
+    REPO_SZ: {'face': 1000, 'lot': 1, 'min': 1},
+}
 SCHEDULE_TIME = (14, 58)  # 定时执行时刻
 
 
@@ -143,26 +149,58 @@ def get_bid_price(code):
 
 
 # ============================================================
+#  资金查询与数量计算
+# ============================================================
+
+def get_available_cash(xt_trader):
+    """查询账户可用资金（元）"""
+    acc = StockAccount(config.account_id)
+    asset = xt_trader.query_stock_asset(acc)
+    if asset is None:
+        raise Exception('查询账户资产失败')
+    cash = getattr(asset, 'cash', None)
+    if cash is None:
+        raise Exception('查询账户可用资金字段失败(asset.cash is None)')
+    return float(cash)
+
+
+def calc_repo_volume(code, cash):
+    """根据可用资金计算委托数量（手），向下取整到最小委托单位"""
+    spec = REPO_SPEC[code]
+    lot_value = spec['face'] * spec['lot']
+    volume = int(cash // lot_value) * spec['lot']
+    if volume < spec['min']:
+        return 0
+    return volume
+
+
+# ============================================================
 #  主流程
 # ============================================================
 
 def run_repo():
-    """执行一次国债逆回购：比较利率 -> 选市场 -> 取买1价 -> 固定10张下单
+    """执行一次国债逆回购：比较利率 -> 选市场 -> 查可用资金 -> 按全部资金下单
 
     使用共享的 QMT 连接（单例），不负责连接的建立与断开。
     """
     xt_trader = connect()
     rates = get_repo_rates()
     code, rate = select_market(rates)
+    cash = get_available_cash(xt_trader)
+    volume = calc_repo_volume(code, cash)
+    if volume <= 0:
+        logger.warning(f'可用资金 {cash:.2f} 元不足下单 {code} 最小单位，跳过')
+        return
     bid = get_bid_price(code)
     if not bid:
         logger.warning(f'未获取到 {code} 买1价，跳过下单')
         return
-    place_order(xt_trader, code, 'sell', bid, REPO_VOLUME, remark='qmt auto', unit='张')
+    logger.info(f'可用资金 {cash:.2f} 元，委托 {code} 数量 {volume} 手')
+    place_order(xt_trader, code, 'sell', bid, volume, remark='qmt auto', unit='手')
 
 
 def scheduled_repo():
-    """APScheduler 定时任务入口：交易日 9:32 执行逆回购"""
+    """APScheduler 定时任务入口：交易日 14:58 执行逆回购"""
     if not is_trading_day():
         logger.info('今日非交易日，跳过')
         return
