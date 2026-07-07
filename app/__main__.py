@@ -16,7 +16,7 @@ import sys
 import argparse
 import logging
 
-from . import MINI_PATH
+from . import MINI_PATH, ACCOUNT_ID
 
 _QMT_SITE = os.path.join(os.path.dirname(MINI_PATH), 'bin.x64', 'Lib', 'site-packages')
 if _QMT_SITE not in sys.path:
@@ -76,14 +76,33 @@ def main():
 def _serve():
     """daemon 模式：建立共享连接 + 启动后台调度器 + 阻塞主线程（24h 常驻）"""
     import threading
+    import time
     from apscheduler.schedulers.background import BackgroundScheduler
     from apscheduler.triggers.cron import CronTrigger
+    from xtquant.xttype import StockAccount
 
     from .qmt import connect, disconnect
     from .repo import scheduled_repo, SCHEDULE_TIME
 
     # 1. 建立共享 QMT 连接（单例，供所有定时任务与回调复用）
-    connect()
+    xt_trader = connect()
+    acc = StockAccount(ACCOUNT_ID)
+
+    # 查询并打印账户资金（连接刚建立，少量重试等待数据同步）
+    asset = None
+    for _ in range(3):
+        asset = xt_trader.query_stock_asset(acc)
+        if asset is not None:
+            break
+        time.sleep(0.5)
+    if asset is not None:
+        logger.info(
+            '账户 %s 资金: 总资产 %.2f, 可用 %.2f, 冻结 %.2f, 持仓市值 %.2f',
+            ACCOUNT_ID, asset.total_asset, asset.cash,
+            asset.frozen_cash, asset.market_value,
+        )
+    else:
+        logger.warning('查询账户 %s 资金失败', ACCOUNT_ID)
 
     # 2. 启动后台调度器，注册定时任务
     scheduler = BackgroundScheduler(timezone='Asia/Shanghai')
