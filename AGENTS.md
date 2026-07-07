@@ -4,11 +4,11 @@ Trading-automation scripts for QMT (迅投极速策略交易系统) on Chinese A
 
 ## Module structure
 
-- **`app/__init__.py`** — package initialization. Reads `config.toml` and exposes `ACCOUNT_ID`, `MINI_PATH`, `SESSION_ID` as package-level variables.
+- **`app/__init__.py`** — package initialization. Reads `config.toml` and exposes a single immutable `config` object (`Config` dataclass: `account_id`, `mini_path`, `dingtalk_token`). All runtime config is accessed via `from . import config`; no flat module-level config variables exist anywhere else.
 - **`app/__main__.py`** — entry point for `python -m app`. Adds QMT's `bin.x64\Lib\site-packages` to `sys.path` and dispatches subcommands (e.g. `python -m app trade buy 隆基绿能 12.40 800`).
-- **`app/qmt.py`** — QMT connection module. Imports config from `__init__`, imports `xtquant` (`XtQuantTrader`, `StockAccount`, `xtconstant`, `xtdata`), and defines `connect()`. Other modules import from here via `from .qmt import connect, xtdata, xtconstant`. Does not manage `sys.path`.
-- **`app/db.py`** — database access module. Manages the SQLite connection (`data/sqlite.db`) and all `stocks` table operations (`get_conn`, `init_db`, `upsert_stock`, `replace_all`, `find_code_by_name`, `search_codes_by_keyword`).
-- **`app/trade.py`** — manual order placement logic. Imports `connect`, `xtdata`, `xtconstant` from `app.qmt` and db functions from `app.db`. Maintains a local SQLite cache (`data/sqlite.db`) for name→code resolution via `xtdata.get_stock_list_in_sector` / `xtdata.get_instrument_detail`. Exposes `main(argv)` for `__main__` to call; not run directly.
+- **`app/qmt.py`** — QMT connection module. Imports config from `app` (`from . import config`), imports `xtquant` (`XtQuantTrader`, `StockAccount`, `xtconstant`, `xtdata`), and defines `connect()`. Other modules import from here via `from .qmt import connect, xtdata, xtconstant`. Does not manage `sys.path`.
+- **`app/db.py`** — database access module (SQLAlchemy 2.x ORM). Defines the module-level `engine` / `SessionLocal` (sessionmaker) bound to `data/sqlite.db`, the `Stock` model (`id`, `name`, `code`), and `init_db()` (calls `Base.metadata.create_all`). Callers use `with SessionLocal() as s:` directly — no raw SQL, no procedural wrapper functions.
+- **`app/trade.py`** — manual order placement logic. Imports `connect`, `xtdata`, `xtconstant` from `app.qmt` and `Stock`, `SessionLocal`, `init_db` from `app.db`. Maintains a local SQLite cache (`data/sqlite.db`) for name→code resolution via `xtdata.get_stock_list_in_sector` / `xtdata.get_instrument_detail`. Exposes `main(argv)` for `__main__` to call; not run directly.
 - **`app/repo.py`** — treasury bond reverse repo (国债逆回购) scheduled task. Imports `connect`, `xtdata` from `app.qmt` and `place_order` from `app.trade`. At 9:32 on each trading day, compares the 1-day repo yield of Shanghai (`204001.SH`) vs Shenzhen (`131810.SZ`), sells the higher-rate market for a fixed 10 lots at bid-1 price. `--now` executes immediately. Exposes `main(argv)` for `__main__` to call; not run directly.
 
 ## Run
@@ -25,5 +25,5 @@ python -m app repo --now                    # 立即执行逆回购
 
 - This project runs on its own Python (the repo `.venv`), separate from QMT's bundled Python. All code is standard Python — only `xtquant` is borrowed from the QMT client.
 - `xtquant` ships with the QMT installation and is **not on PyPI** — do not `pip install xtquant`. `app/__main__.py` adds the client's `bin.x64\Lib\site-packages` to `sys.path` automatically so `xtquant` can be imported.
-- The repo `.venv` holds third-party deps: `pandas`, `numpy`, `TA-Lib`, `tomli`. These are the project's real runtime dependencies, not just for syntax checks.
-- No `requirements.txt` / `pyproject.toml` exists.
+- The repo `.venv` holds third-party deps: `pandas`, `numpy`, `TA-Lib`, `tomli`, `SQLAlchemy`, `APScheduler`, `requests`. These are the project's real runtime dependencies, not just for syntax checks.
+- Runtime deps are pinned in `requirements.txt` (via `pip freeze`).

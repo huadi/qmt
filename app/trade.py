@@ -17,9 +17,11 @@ import time
 import argparse
 import logging
 
+from sqlalchemy import delete, select
+
 from .qmt import connect, xtdata, xtconstant
-from . import ACCOUNT_ID
-from .db import init_db, replace_all, find_code_by_name, search_codes_by_keyword
+from . import config
+from .db import Stock, SessionLocal, init_db
 from xtquant.xttype import StockAccount
 
 logger = logging.getLogger(__name__)
@@ -47,7 +49,10 @@ def build_name_cache():
         if (i + 1) % 500 == 0:
             logger.info(f'已处理 {i + 1}/{len(codes)}')
     init_db()
-    replace_all(stocks)
+    with SessionLocal() as s:
+        s.execute(delete(Stock))
+        s.add_all([Stock(name=name, code=code) for name, code in stocks])
+        s.commit()
     logger.info(f'缓存已写入，共 {len(stocks)} 条记录')
     return len(stocks)
 
@@ -59,12 +64,16 @@ def resolve_code(name_or_code):
         return append_suffix(code)
 
     # 精确匹配
-    result = find_code_by_name(code)
+    with SessionLocal() as s:
+        result = s.scalar(select(Stock.code).where(Stock.name == code))
     if result:
         return result
 
     # 模糊匹配
-    rows = search_codes_by_keyword(code)
+    with SessionLocal() as s:
+        rows = s.execute(
+            select(Stock.name, Stock.code).where(Stock.name.like(f'%{code}%'))
+        ).all()
     if len(rows) == 1:
         logger.info(f'模糊匹配: {name_or_code} -> {rows[0][0]}')
         return rows[0][1]
@@ -77,7 +86,7 @@ def resolve_code(name_or_code):
 
 def place_order(xt_trader, code, direction, price, volume, remark='手动下单', unit='股'):
     """提交委托，返回订单号；失败抛 RuntimeError"""
-    acc = StockAccount(ACCOUNT_ID)
+    acc = StockAccount(config.account_id)
     order_type = xtconstant.STOCK_BUY if direction == 'buy' else xtconstant.STOCK_SELL
     action = '买入' if direction == 'buy' else '卖出'
     logger.info(f'{action} {code} 价格 {price} 数量 {volume}{unit} ...')
@@ -94,7 +103,7 @@ def place_order(xt_trader, code, direction, price, volume, remark='手动下单'
 
 def check_order(xt_trader, order_id, code):
     """回查委托状态并打印成交情况"""
-    acc = StockAccount(ACCOUNT_ID)
+    acc = StockAccount(config.account_id)
 
     orders = xt_trader.query_stock_orders(acc)
     if not orders:
