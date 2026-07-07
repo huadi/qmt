@@ -16,9 +16,9 @@ import sys
 import argparse
 import logging
 
-from . import MINI_PATH, ACCOUNT_ID
+from . import config
 
-_QMT_SITE = os.path.join(os.path.dirname(MINI_PATH), 'bin.x64', 'Lib', 'site-packages')
+_QMT_SITE = os.path.join(os.path.dirname(config.mini_path), 'bin.x64', 'Lib', 'site-packages')
 if _QMT_SITE not in sys.path:
     sys.path.insert(0, _QMT_SITE)
 
@@ -86,7 +86,7 @@ def _serve():
 
     # 1. 建立共享 QMT 连接（单例，供所有定时任务与回调复用）
     xt_trader = connect()
-    acc = StockAccount(ACCOUNT_ID)
+    acc = StockAccount(config.account_id)
 
     # 查询并打印账户资金（连接刚建立，少量重试等待数据同步）
     asset = None
@@ -98,11 +98,11 @@ def _serve():
     if asset is not None:
         logger.info(
             '账户 %s 资金: 总资产 %.2f, 可用 %.2f, 冻结 %.2f, 持仓市值 %.2f',
-            ACCOUNT_ID, asset.total_asset, asset.cash,
+            config.account_id, asset.total_asset, asset.cash,
             asset.frozen_cash, asset.market_value,
         )
     else:
-        logger.warning('查询账户 %s 资金失败', ACCOUNT_ID)
+        logger.warning('查询账户 %s 资金失败', config.account_id)
 
     # 2. 启动后台调度器，注册定时任务
     scheduler = BackgroundScheduler(timezone='Asia/Shanghai')

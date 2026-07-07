@@ -2,3 +2,7 @@
 [qmt]
 account_id = "你的资金账号"
 mini_path = r"C:\迅投极速策略交易系统交易终端 太平洋证券QMT实盘\userdata_mini"
+
+# 钉钉机器人通知配置
+[notify]
+dingtalk_token = "你的钉钉机器人 access_token"
