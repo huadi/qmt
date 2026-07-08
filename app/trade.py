@@ -9,9 +9,8 @@
 
 前置条件:
     1. mini QMT 终端已启动并登录
-    2. config.toml 中填写本机的 account_id / mini_path / session_id
+    2. config.toml 中填写本机的 account_id / mini_path
 """
-import os
 import sys
 import time
 import argparse
@@ -19,21 +18,29 @@ import logging
 
 from sqlalchemy import delete, select
 
-from .qmt import connect, xtdata, xtconstant
-from . import config
+from .qmt import connect, xtdata, xtconstant, get_account
 from .db import Stock, SessionLocal, init_db
-from xtquant.xttype import StockAccount
 
 logger = logging.getLogger(__name__)
 
 
 def append_suffix(code):
-    """6位代码加交易所后缀"""
-    if code.startswith(('60', '688', '51', '204')):
+    """6位代码加交易所后缀。
+
+    使用"长前缀优先 + 首位兜底"策略，覆盖沪深 A 股/科创板/创业板(含注册制301)/ETF/LOF/逆回购/可转债。
+    """
+    # 沪市特判：逆回购(204xxx) / 可转债(110/111/113/115xxx)
+    if code.startswith(('204', '11')):
         return code + '.SH'
-    elif code.startswith(('00', '300', '131')):
+    # 深市特判：逆回购(1318xx) / 可转债(123/127/128xxx) / B股(200xxx)
+    if code.startswith(('1318', '12', '200')):
         return code + '.SZ'
-    raise ValueError(f'无法识别的股票代码: {code}')
+    first = code[0]
+    if first in ('5', '6', '9'):
+        return code + '.SH'  # 沪市：5=基金/ETF, 6=A股/科创板, 9=B股
+    if first in ('0', '3', '1'):
+        return code + '.SZ'  # 深市：0=主板, 3=创业板(300/301), 1=基金/LOF/其他
+    raise ValueError(f'无法识别的股票代码: {code}（请检查代码是否正确，或使用股票名称）')
 
 
 def build_name_cache():
@@ -48,7 +55,6 @@ def build_name_cache():
             stocks.append((detail['InstrumentName'], code))
         if (i + 1) % 500 == 0:
             logger.info(f'已处理 {i + 1}/{len(codes)}')
-    init_db()
     with SessionLocal() as s:
         s.execute(delete(Stock))
         s.add_all([Stock(name=name, code=code) for name, code in stocks])
@@ -84,6 +90,21 @@ def resolve_code(name_or_code):
     raise ValueError(f'未找到股票: {name_or_code}，请运行 `python -m app init-db` 初始化数据库')
 
 
+def _unit_label(code: str) -> str:
+    """根据代码返回委托数量单位：逆回购为"张"，其余为"股"。"""
+    return '张' if code.startswith(('204', '1318')) else '股'
+
+
+# 价格类型 → 中文名称（延迟查表，避免模块加载时 xtconstant 还未就绪）
+def _price_type_name(price_type) -> str:
+    return {
+        xtconstant.FIX_PRICE: '限价',
+        xtconstant.LATEST_PRICE: '最新价',
+        xtconstant.MARKET_PEER_PRICE_FIRST: '对手方最优',
+        xtconstant.MARKET_MINE_PRICE_FIRST: '本方最优',
+    }.get(price_type, f'type{price_type}')
+
+
 def place_order(xt_trader, code, direction, price, volume, remark='手动下单', price_type=None):
     """提交委托，返回订单号；失败抛 RuntimeError
 
@@ -91,26 +112,17 @@ def place_order(xt_trader, code, direction, price, volume, remark='手动下单'
     可选：xtconstant.BUY1_PRICE（买1价）/xtconstant.LATEST_PRICE（最新价）等，
     使用市价类型时 price 参数传 0 即可。
     """
-    acc = StockAccount(config.account_id)
+    acc = get_account()
     order_type = xtconstant.STOCK_BUY if direction == 'buy' else xtconstant.STOCK_SELL
     action = '买入' if direction == 'buy' else '卖出'
-    # 自动判断单位：逆回购(204xxx.SH/1318xx.SZ)为张，股票为股
-    if code.startswith(('204', '1318')):
-        unit = '张'
-    else:
-        unit = '股'
+    unit = _unit_label(code)
     if price_type is None:
         price_type = xtconstant.FIX_PRICE
-    price_type_name = {
-        xtconstant.FIX_PRICE: '限价',
-        xtconstant.LATEST_PRICE: '最新价',
-        xtconstant.MARKET_PEER_PRICE_FIRST: '对手方最优',
-        xtconstant.MARKET_MINE_PRICE_FIRST: '本方最优',
-    }.get(price_type, f'type{price_type}')
+    price_type_name = _price_type_name(price_type)
     price_str = f'{price}' if price_type == xtconstant.FIX_PRICE else price_type_name
     logger.info(f'{action} {code} 价格 {price_str} 数量 {volume}{unit} ...')
     order_id = xt_trader.order_stock(
-        acc, code, order_type, volume, price_type, price, remark
+        acc, code, order_type, volume, price_type, price, order_remark=remark
     )
     if order_id is not None and order_id >= 0:
         logger.info(f'委托提交成功, 订单号: {order_id}')
@@ -121,18 +133,21 @@ def place_order(xt_trader, code, direction, price, volume, remark='手动下单'
 
 
 def check_order(xt_trader, order_id, code):
-    """回查委托状态并打印成交情况"""
-    acc = StockAccount(config.account_id)
+    """回查委托状态并打印成交情况（按 order_id 精确匹配，避免把同股票旧单误当作新单）。"""
+    acc = get_account()
 
     orders = xt_trader.query_stock_orders(acc)
     if not orders:
-        logger.warning(f'未查到任何委托记录, 请在客户端确认订单号 {order_id}')
+        logger.warning(f'未查到任何委托记录, 请在客户端确认订单号 {order_id}（QMT 同步可能有延迟）')
         return
     for o in orders:
-        if str(o.order_id) == str(order_id) or o.stock_code == code:
-            logger.info(f'委托状态: {o.status_msg}, 已成交: {o.traded_volume}股')
+        if str(o.order_id) == str(order_id):
+            logger.info(
+                '委托状态: %s, 已成交: %s%s',
+                o.status_msg, o.traded_volume, _unit_label(code),
+            )
             return
-    logger.warning(f'未找到订单号 {order_id}, 请在客户端确认')
+    logger.warning(f'未找到订单号 {order_id}（{code}），QMT 同步可能有延迟，请在客户端确认')
 
 
 def main(argv=None):
@@ -143,6 +158,7 @@ def main(argv=None):
     parser.add_argument('volume', type=int, help='委托数量(股)')
     args = parser.parse_args(argv)
 
+    init_db()  # 确保表结构存在，避免首次使用报表不存在
     code = resolve_code(args.name_or_code)
 
     if args.volume <= 0:

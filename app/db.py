@@ -45,8 +45,9 @@ class Watch(Base):
     code: Mapped[str] = mapped_column(nullable=False, index=True)
     above_price: Mapped[Optional[float]] = mapped_column(comment='上涨触发价，None表示不监控')
     below_price: Mapped[Optional[float]] = mapped_column(comment='下跌触发价，None表示不监控')
-    above_triggered: Mapped[bool] = mapped_column(default=False, comment='上涨阈值是否已触发')
-    below_triggered: Mapped[bool] = mapped_column(default=False, comment='下跌阈值是否已触发')
+    # 已弃用：触发状态以时间戳字段为准（_at 为 None ⇔ 未触发），保留这两列仅为兼容老数据库，新代码不要再读写。
+    above_triggered: Mapped[bool] = mapped_column(default=False)
+    below_triggered: Mapped[bool] = mapped_column(default=False)
     above_triggered_at: Mapped[Optional[datetime.datetime]] = mapped_column(comment='上涨触发时间')
     below_triggered_at: Mapped[Optional[datetime.datetime]] = mapped_column(comment='下跌触发时间')
     created_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.now)

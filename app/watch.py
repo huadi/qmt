@@ -26,25 +26,37 @@ from sqlalchemy import select
 from .qmt import connect, xtdata
 from .db import Watch, Stock, SessionLocal, init_db
 from .trade import resolve_code
-from .repo import is_trading_day
-from .notify.dingtalk import send as dingtalk_send
+from .calendar import is_trading_day, is_trading_time, today_sh, now_sh
+from .notify import send as notify_send
 
 logger = logging.getLogger(__name__)
 
-
-def is_trading_time(now=None):
-    """判断当前是否在交易时段内（9:30-11:30, 13:00-15:00）"""
-    if now is None:
-        now = datetime.datetime.now()
-    t = now.time()
-    morning = datetime.time(9, 30) <= t <= datetime.time(11, 30)
-    afternoon = datetime.time(13, 0) <= t <= datetime.time(15, 0)
-    return morning or afternoon
+# 已通过 xtdata.subscribe_quote 订阅的代码集合，避免每分钟重复订阅
+_subscribed: set[str] = set()
 
 
 # ============================================================
 #  CRUD 操作
 # ============================================================
+
+def _normalize_threshold(value: float) -> float | None:
+    """将 CLI 传入的阈值归一化：0/负数/None 视为未设置，返回 None；否则返回原值。"""
+    return value if value is not None and value > 0 else None
+
+
+def _reset_trigger_state(watch: Watch) -> None:
+    """重置一条规则的触发状态（清空触发时间戳）。"""
+    watch.above_triggered_at = None
+    watch.below_triggered_at = None
+
+
+def _validate_thresholds(below: float | None, above: float | None) -> None:
+    """校验阈值合法性：不能同时为空，且下限必须 < 上限（若两者都设置）。"""
+    if above is None and below is None:
+        raise ValueError('上涨触发价和下跌触发价不能同时为空（至少设置一个 >0 的值）')
+    if above is not None and below is not None and below >= above:
+        raise ValueError(f'下跌阈值({below:.2f})必须小于上涨阈值({above:.2f})，参数顺序：先跌后涨')
+
 
 def add_watch(name_or_code: str, below_price: float, above_price: float) -> Watch:
     """添加一条监控规则。
@@ -52,21 +64,15 @@ def add_watch(name_or_code: str, below_price: float, above_price: float) -> Watc
     below_price=0 或 above_price=0 表示不设置该方向阈值（转为 None）。
     参数顺序：先写下跌阈值（跌破提醒的低价），后写上涨阈值（涨破提醒的高价）。
     """
-    # 0 值视为未设置
-    below = below_price if below_price and below_price > 0 else None
-    above = above_price if above_price and above_price > 0 else None
-
-    if above is None and below is None:
-        raise ValueError('上涨触发价和下跌触发价不能同时为空（至少设置一个 >0 的值）')
+    below = _normalize_threshold(below_price)
+    above = _normalize_threshold(above_price)
+    _validate_thresholds(below, above)
 
     code = resolve_code(name_or_code)
-    # 查询股票名称用于展示
     with SessionLocal() as s:
         stock = s.scalar(select(Stock).where(Stock.code == code))
         name = stock.name if stock else name_or_code
-
-    watch = Watch(name=name, code=code, above_price=above, below_price=below)
-    with SessionLocal() as s:
+        watch = Watch(name=name, code=code, above_price=above, below_price=below)
         s.add(watch)
         s.commit()
         s.refresh(watch)
@@ -98,10 +104,7 @@ def reset_watch(watch_id: int) -> bool:
         watch = s.get(Watch, watch_id)
         if watch is None:
             return False
-        watch.above_triggered = False
-        watch.below_triggered = False
-        watch.above_triggered_at = None
-        watch.below_triggered_at = None
+        _reset_trigger_state(watch)
         s.commit()
         logger.info(f'已重置监控: id={watch_id} {watch.name}({watch.code})')
         return True
@@ -113,25 +116,17 @@ def update_watch(watch_id: int, below_price: float, above_price: float) -> Watch
     below_price=0 或 above_price=0 表示关闭对应方向的监控（设为None）。
     参数顺序：先写下跌阈值（跌破提醒的低价），后写上涨阈值（涨破提醒的高价）。
     """
-    # 0 值视为关闭该方向
-    below = below_price if below_price and below_price > 0 else None
-    above = above_price if above_price and above_price > 0 else None
-
-    if above is None and below is None:
-        raise ValueError('上涨触发价和下跌触发价不能同时为空（至少设置一个 >0 的值）')
+    below = _normalize_threshold(below_price)
+    above = _normalize_threshold(above_price)
+    _validate_thresholds(below, above)
 
     with SessionLocal() as s:
         watch = s.get(Watch, watch_id)
         if watch is None:
             return None
-        # 更新阈值
         watch.above_price = above
         watch.below_price = below
-        # 阈值变更后重置触发状态
-        watch.above_triggered = False
-        watch.below_triggered = False
-        watch.above_triggered_at = None
-        watch.below_triggered_at = None
+        _reset_trigger_state(watch)  # 阈值变更后重置触发状态
         s.commit()
         s.refresh(watch)
     logger.info(f'已更新监控: {watch}')
@@ -182,12 +177,14 @@ def resolve_watch(identifier: str) -> Watch | list[Watch] | None:
 # ============================================================
 
 def check_watches():
-    """执行一次股价检查：获取所有未完全触发的监控股票行情，比对阈值并通知。
+    """执行一次股价检查：获取所有监控股票行情，比对阈值并通知。
 
-    单只股票异常不影响其他股票的检查。
+    流程：(1) 基于快照粗筛应触发的规则；(2) 在单个 DB 事务中基于最新状态 CAS 写入触发时间；
+    (3) 提交成功后才发送钉钉通知，避免"已通知但未落库"导致重复提醒。
+    单只股票行情异常不影响其他股票。
     """
-    today = datetime.date.today()
-    # 查询所有设置了至少一个阈值的监控规则（每日自动重置，无需排除已触发的）
+    today = today_sh()
+
     with SessionLocal() as s:
         watches = list(s.scalars(
             select(Watch).where(
@@ -199,28 +196,30 @@ def check_watches():
         logger.debug('没有需要检查的监控规则')
         return
 
-    # 收集需要获取行情的代码（去重）
     codes = list({w.code for w in watches})
     logger.info(f'检查 {len(watches)} 条监控规则，涉及 {len(codes)} 只股票')
 
-    # 订阅行情
-    for code in codes:
+    # 仅订阅新出现的代码（已订阅的跳过），避免每分钟重复订阅
+    new_codes = [c for c in codes if c not in _subscribed]
+    for code in new_codes:
         try:
             xtdata.subscribe_quote(code)
+            _subscribed.add(code)
         except Exception as e:
             logger.warning(f'订阅 {code} 行情失败: {e}')
-    time.sleep(0.3)  # 等待数据推送
+    if new_codes:
+        time.sleep(0.3)  # 首次订阅后等待数据推送；已订阅的数据已在本地缓存，无需再等
 
-    # 获取最新行情
     try:
         ticks = xtdata.get_full_tick(codes) or {}
     except Exception as e:
         logger.error(f'获取行情失败: {e}')
         return
 
-    now = datetime.datetime.now()
-    triggered_count = 0
+    now = now_sh()
 
+    # 阶段 1：基于快照粗筛本轮"可能触发"的规则（不写 DB）
+    candidates: dict[int, dict] = {}  # watch_id -> info
     for w in watches:
         try:
             tick = ticks.get(w.code)
@@ -232,52 +231,66 @@ def check_watches():
                 logger.warning(f'{w.name}({w.code}) 价格异常: {price}')
                 continue
 
-            triggered = False
-            messages = []
+            above_hit = (w.above_price is not None
+                and (w.above_triggered_at is None or w.above_triggered_at.date() < today)
+                and price >= w.above_price)
+            below_hit = (w.below_price is not None
+                and (w.below_triggered_at is None or w.below_triggered_at.date() < today)
+                and price <= w.below_price)
+            if not (above_hit or below_hit):
+                continue
 
-            # 检查上涨触发：每日最多1次（未触发过 或 最后触发不是今天）
-            above_can_trigger = (w.above_price is not None
-                and (w.above_triggered_at is None or w.above_triggered_at.date() < today))
-            if above_can_trigger and price >= w.above_price:
-                messages.append(
-                    f'【涨破提醒】{w.name}({w.code})\n当前价格：{price:.2f}元，已涨破您设置的{w.above_price:.2f}元阈值'
-                )
-                w.above_triggered = True
-                w.above_triggered_at = now
-                triggered = True
-
-            # 检查下跌触发：每日最多1次（未触发过 或 最后触发不是今天）
-            below_can_trigger = (w.below_price is not None
-                and (w.below_triggered_at is None or w.below_triggered_at.date() < today))
-            if below_can_trigger and price <= w.below_price:
-                messages.append(
-                    f'【跌破提醒】{w.name}({w.code})\n当前价格：{price:.2f}元，已跌破您设置的{w.below_price:.2f}元阈值'
-                )
-                w.below_triggered = True
-                w.below_triggered_at = now
-                triggered = True
-
-            if triggered:
-                msg_parts = messages + [f'触发时间：{now.strftime("%Y-%m-%d %H:%M:%S")}']
-                notify_msg = '\n'.join(msg_parts)
-                logger.info(f'触发通知:\n{notify_msg}')
-                try:
-                    dingtalk_send(notify_msg)
-                except Exception as e:
-                    logger.error(f'发送钉钉通知失败: {e}')
-                triggered_count += 1
-
-                # 更新数据库状态
-                with SessionLocal() as s:
-                    s.merge(w)
-                    s.commit()
-
+            # 按方向分别构造消息，阶段 2 根据 CAS 结果直接取用
+            above_msg = (
+                f'【涨破提醒】{w.name}({w.code})\n当前价格：{price:.2f}元，已涨破您设置的{w.above_price:.2f}元阈值'
+                if above_hit else None
+            )
+            below_msg = (
+                f'【跌破提醒】{w.name}({w.code})\n当前价格：{price:.2f}元，已跌破您设置的{w.below_price:.2f}元阈值'
+                if below_hit else None
+            )
+            candidates[w.id] = {'above_msg': above_msg, 'below_msg': below_msg}
         except Exception as e:
-            logger.exception(f'检查 {w.name}({w.code}) 时发生异常: {e}')
+            logger.exception(f'检查 {w.name}({w.code}) 行情时发生异常: {e}')
             continue
 
-    if triggered_count:
-        logger.info(f'本轮检查共触发 {triggered_count} 条通知')
+    if not candidates:
+        return
+
+    # 阶段 2：单个事务里，基于 DB 最新状态 CAS 写入触发时间（防并发重复通知 + 防 stale merge 覆盖 CLI 修改）
+    triggered: list[tuple[str, str]] = []  # (name/code 标签, notify_msg)
+    with SessionLocal() as s:
+        for wid, info in candidates.items():
+            w = s.get(Watch, wid)
+            if w is None:
+                continue
+            msgs = []
+            # 基于最新 DB 状态二次确认"今日尚未触发"，避免并发 reset/update/重复执行导致的重复通知
+            if info['above_msg'] and w.above_price is not None and (
+                w.above_triggered_at is None or w.above_triggered_at.date() < today
+            ):
+                w.above_triggered_at = now
+                msgs.append(info['above_msg'])
+            if info['below_msg'] and w.below_price is not None and (
+                w.below_triggered_at is None or w.below_triggered_at.date() < today
+            ):
+                w.below_triggered_at = now
+                msgs.append(info['below_msg'])
+            if msgs:
+                msgs.append(f'触发时间：{now.strftime("%Y-%m-%d %H:%M:%S")}')
+                triggered.append((f'{w.name}({w.code})', '\n'.join(msgs)))
+        s.commit()
+
+    # 阶段 3：DB 提交成功后才真正发送通知（若 commit 抛异常，不会走到这里）
+    for tag, msg in triggered:
+        logger.info(f'触发通知 ({tag}):\n{msg}')
+        try:
+            notify_send(msg)
+        except Exception as e:
+            logger.error(f'发送通知失败 ({tag}): {e}')
+
+    if triggered:
+        logger.info(f'本轮检查共触发 {len(triggered)} 条通知')
 
 
 # ============================================================
@@ -299,6 +312,32 @@ def scheduled_watch():
 
 
 # ============================================================
+#  CLI 工具函数
+# ============================================================
+
+def _fmt_threshold(v) -> str:
+    return f'{v:.2f}' if v else '-'
+
+
+def _fmt_watch_brief(w: Watch) -> str:
+    return f'id={w.id} {w.name}({w.code}) 下跌阈值={_fmt_threshold(w.below_price)} 上涨阈值={_fmt_threshold(w.above_price)}'
+
+
+def _resolve_cli_target(identifier: str, action: str) -> Watch | list[Watch] | None:
+    """CLI 辅助：解析标识符；若未找到/多匹配则打印提示并返回 None/list，由调用方处理。"""
+    result = resolve_watch(identifier)
+    if result is None:
+        print(f'未找到匹配的监控规则：{identifier}')
+        return None
+    if isinstance(result, list):
+        print(f'找到{len(result)}条匹配的监控规则，请使用ID指定要{action}的规则：')
+        for w in result:
+            print(f'  {_fmt_watch_brief(w)}')
+        return result
+    return result
+
+
+# ============================================================
 #  CLI 入口
 # ============================================================
 
@@ -307,30 +346,24 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog='python -m app watch', description='股价监控管理')
     sub = parser.add_subparsers(dest='action')
 
-    # add
     p_add = sub.add_parser('add', help='添加监控规则')
     p_add.add_argument('name_or_code', help='股票名称或6位代码')
     p_add.add_argument('below_price', type=float, help='下跌触发价（跌破该价格提醒，传0表示不设置）')
     p_add.add_argument('above_price', type=float, help='上涨触发价（涨破该价格提醒，传0表示不设置）')
 
-    # list
     sub.add_parser('list', help='查看所有监控规则')
 
-    # delete
     p_del = sub.add_parser('delete', help='删除监控规则')
     p_del.add_argument('id', type=str, help='监控规则ID、股票名称或6位代码（同股票有多条规则时请传ID）')
 
-    # reset
     p_reset = sub.add_parser('reset', help='重置触发状态')
     p_reset.add_argument('id', type=str, help='监控规则ID、股票名称或6位代码（同股票有多条规则时请传ID）')
 
-    # update
     p_update = sub.add_parser('update', help='更新监控阈值（自动重置触发状态）')
     p_update.add_argument('id', type=str, help='监控规则ID、股票名称或6位代码（同股票有多条规则时请传ID）')
     p_update.add_argument('below_price', type=float, help='新的下跌触发价（跌破该价格提醒，传0表示关闭该方向监控）')
     p_update.add_argument('above_price', type=float, help='新的上涨触发价（涨破该价格提醒，传0表示关闭该方向监控）')
 
-    # now (立即执行一次检查)
     sub.add_parser('now', help='立即执行一次股价检查（测试用）')
 
     args = parser.parse_args(argv)
@@ -340,74 +373,42 @@ def main(argv=None):
 
     if args.action == 'add':
         w = add_watch(args.name_or_code, args.below_price, args.above_price)
-        below_str = f'{w.below_price:.2f}' if w.below_price else '-'
-        above_str = f'{w.above_price:.2f}' if w.above_price else '-'
-        print(f'已添加监控: id={w.id} {w.name}({w.code}) 下跌阈值={below_str} 上涨阈值={above_str}')
+        print(f'已添加监控: {_fmt_watch_brief(w)}')
     elif args.action == 'list':
         watches = list_watches()
         if not watches:
             print('暂无监控规则')
         else:
-            today = datetime.date.today()
+            today = today_sh()
             print(f'{"ID":<4} {"股票名称":<10} {"代码":<12} {"下跌阈值":<10} {"上涨阈值":<10} {"今日跌破已通知":<14} {"今日涨破已通知":<14} {"创建时间":<20}')
             print('-' * 105)
             for w in watches:
-                below_str = f'{w.below_price:.2f}' if w.below_price else '-'
-                above_str = f'{w.above_price:.2f}' if w.above_price else '-'
                 below_today = w.below_triggered_at is not None and w.below_triggered_at.date() == today
                 above_today = w.above_triggered_at is not None and w.above_triggered_at.date() == today
-                print(f'{w.id:<4} {w.name:<10} {w.code:<12} {below_str:<10} {above_str:<10} '
+                print(f'{w.id:<4} {w.name:<10} {w.code:<12} {_fmt_threshold(w.below_price):<10} {_fmt_threshold(w.above_price):<10} '
                       f'{"是" if below_today else "否":<14} '
                       f'{"是" if above_today else "否":<14} '
                       f'{w.created_at.strftime("%Y-%m-%d %H:%M"):<20}')
     elif args.action == 'delete':
-        result = resolve_watch(args.id)
-        if result is None:
-            print(f'未找到匹配的监控规则：{args.id}')
-        elif isinstance(result, list):
-            print(f'找到{len(result)}条匹配的监控规则，请使用ID指定要删除的规则：')
-            for w in result:
-                below_str = f'{w.below_price:.2f}' if w.below_price else '-'
-                above_str = f'{w.above_price:.2f}' if w.above_price else '-'
-                print(f'  id={w.id} {w.name}({w.code}) 下跌阈值={below_str} 上涨阈值={above_str}')
-        else:
+        result = _resolve_cli_target(args.id, '删除')
+        if isinstance(result, Watch):
             if delete_watch(result.id):
                 print(f'已删除监控规则 id={result.id} {result.name}({result.code})')
     elif args.action == 'reset':
-        result = resolve_watch(args.id)
-        if result is None:
-            print(f'未找到匹配的监控规则：{args.id}')
-        elif isinstance(result, list):
-            print(f'找到{len(result)}条匹配的监控规则，请使用ID指定要重置的规则：')
-            for w in result:
-                below_str = f'{w.below_price:.2f}' if w.below_price else '-'
-                above_str = f'{w.above_price:.2f}' if w.above_price else '-'
-                print(f'  id={w.id} {w.name}({w.code}) 下跌阈值={below_str} 上涨阈值={above_str}')
-        else:
+        result = _resolve_cli_target(args.id, '重置')
+        if isinstance(result, Watch):
             if reset_watch(result.id):
                 print(f'已重置监控规则 id={result.id} {result.name}({result.code})')
     elif args.action == 'update':
-        result = resolve_watch(args.id)
-        if result is None:
-            print(f'未找到匹配的监控规则：{args.id}')
-            return
-        elif isinstance(result, list):
-            print(f'找到{len(result)}条匹配的监控规则，请使用ID指定要更新的规则：')
-            for w in result:
-                below_str = f'{w.below_price:.2f}' if w.below_price else '-'
-                above_str = f'{w.above_price:.2f}' if w.above_price else '-'
-                print(f'  id={w.id} {w.name}({w.code}) 下跌阈值={below_str} 上涨阈值={above_str}')
-            return
-        try:
-            w = update_watch(result.id, args.below_price, args.above_price)
-        except ValueError as e:
-            print(f'更新失败: {e}')
-            return
-        below_str = f'{w.below_price:.2f}' if w.below_price else '-'
-        above_str = f'{w.above_price:.2f}' if w.above_price else '-'
-        print(f'已更新监控: id={w.id} {w.name}({w.code}) 下跌阈值={below_str} 上涨阈值={above_str}，触发状态已自动重置')
+        result = _resolve_cli_target(args.id, '更新')
+        if isinstance(result, Watch):
+            try:
+                w = update_watch(result.id, args.below_price, args.above_price)
+            except ValueError as e:
+                print(f'更新失败: {e}')
+                return
+            print(f'已更新监控: {_fmt_watch_brief(w)}，触发状态已自动重置')
     elif args.action == 'now':
-        # 立即执行需要先确保QMT连接
         connect()
         check_watches()
     else:
