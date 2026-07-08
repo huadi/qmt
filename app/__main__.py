@@ -10,10 +10,11 @@ app 包入口，支持 `python -m app` 运行。
     python -m app trade sell 隆基绿能 12.40 800
     python -m app serve                        # daemon：常驻运行，定时任务 + 回调
     python -m app repo --now                   # 立即执行一次逆回购（测试/手动）
-    python -m app watch add 隆基绿能 15.0 10.0  # 添加股价监控（涨破15或跌破10通知）
+    python -m app watch add 隆基绿能 10.0 15.0  # 添加股价监控（跌破10或涨破15通知，先跌后涨顺序）
     python -m app watch list                   # 查看所有监控规则
-    python -m app watch delete 1               # 删除ID为1的监控
-    python -m app watch reset 1                # 重置ID为1的触发状态
+    python -m app watch update 深信服 90 130     # 更新深信服监控阈值为跌破90/涨破130，支持传ID/股票名/代码
+    python -m app watch delete 300454           # 删除深信服的监控，支持传ID/股票名/代码
+    python -m app watch reset 深信服            # 重置深信服的触发状态，支持传ID/股票名/代码
     python -m app watch now                    # 立即执行一次股价检查（测试）
 """
 import os
@@ -135,7 +136,7 @@ def _serve():
     )
     scheduler.start()
     logger.info('定时任务已启动，每个交易日 %02d:%02d 自动执行逆回购', *SCHEDULE_TIME)
-    logger.info('股价监控已启动，交易时段（9:30-11:30/13:00-15:00）每分钟检查一次价格')
+    logger.info('股价监控已启动，交易时段（9:30-11:30/13:00-15:00）每分钟检查一次价格，每个阈值每日最多通知1次')
     logger.info('daemon 运行中，按 Ctrl+C 退出')
 
     # 3. 阻塞主线程；未来在此注册 QMT 回调（行情订阅、订单回报、通知推送）
