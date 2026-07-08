@@ -84,14 +84,29 @@ def resolve_code(name_or_code):
     raise ValueError(f'未找到股票: {name_or_code}，请运行 `python -m app init` 初始化数据库')
 
 
-def place_order(xt_trader, code, direction, price, volume, remark='手动下单', unit='股'):
-    """提交委托，返回订单号；失败抛 RuntimeError"""
+def place_order(xt_trader, code, direction, price, volume, remark='手动下单', unit='股', price_type=None):
+    """提交委托，返回订单号；失败抛 RuntimeError
+
+    price_type: 价格类型，默认限价单（xtconstant.FIX_PRICE）。
+    可选：xtconstant.BUY1_PRICE（买1价）/xtconstant.LATEST_PRICE（最新价）等，
+    使用市价类型时 price 参数传 0 即可。
+    """
     acc = StockAccount(config.account_id)
     order_type = xtconstant.STOCK_BUY if direction == 'buy' else xtconstant.STOCK_SELL
     action = '买入' if direction == 'buy' else '卖出'
-    logger.info(f'{action} {code} 价格 {price} 数量 {volume}{unit} ...')
+    if price_type is None:
+        price_type = xtconstant.FIX_PRICE
+    price_type_name = {
+        xtconstant.FIX_PRICE: '限价',
+        xtconstant.BUY1_PRICE: '买1价',
+        xtconstant.SELL1_PRICE: '卖1价',
+        xtconstant.LATEST_PRICE: '最新价',
+        xtconstant.MARKET_BEST_PRICE: '对手方最优',
+    }.get(price_type, f'type{price_type}')
+    price_str = f'{price}' if price_type == xtconstant.FIX_PRICE else price_type_name
+    logger.info(f'{action} {code} 价格 {price_str} 数量 {volume}{unit} ...')
     order_id = xt_trader.order_stock(
-        acc, code, order_type, volume, xtconstant.FIX_PRICE, price, remark
+        acc, code, order_type, volume, price_type, price, remark
     )
     if order_id is not None and order_id >= 0:
         logger.info(f'委托提交成功, 订单号: {order_id}')

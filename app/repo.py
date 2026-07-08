@@ -22,7 +22,7 @@ import logging
 import argparse
 
 from . import config
-from .qmt import connect, xtdata
+from .qmt import connect, xtdata, xtconstant
 from .trade import place_order
 from xtquant.xttype import StockAccount
 
@@ -131,24 +131,6 @@ def select_market(rates):
 
 
 # ============================================================
-#  买1价查询
-# ============================================================
-
-def get_bid_price(code):
-    """获取指定逆回购的买1价（用于下单）"""
-    try:
-        ticks = xtdata.get_full_tick([code])
-        tick = (ticks or {}).get(code)
-        if tick:
-            bids = tick.get('bidPrice')
-            if bids and len(bids) > 0 and bids[0] > 0:
-                return bids[0]
-    except Exception as e:
-        logger.warning(f'获取 {code} 买1价失败: {e}')
-    return None
-
-
-# ============================================================
 #  资金查询与数量计算
 # ============================================================
 
@@ -185,9 +167,10 @@ def calc_repo_volume(cash):
 # ============================================================
 
 def run_repo():
-    """执行一次国债逆回购：比较利率 -> 选市场 -> 查可用资金 -> 按全部资金下单
+    """执行一次国债逆回购：比较利率 -> 选市场 -> 查可用资金 -> 以买1价全额下单
 
     使用共享的 QMT 连接（单例），不负责连接的建立与断开。
+    使用 xtconstant.BUY1_PRICE 直接以买1价委托，无需提前查询行情，避免下单时点价差。
     """
     xt_trader = connect()
     rates = get_repo_rates()
@@ -197,12 +180,10 @@ def run_repo():
     if volume <= 0:
         logger.warning(f'可用资金 {cash:.2f} 元不足下单 {code} 最小单位（10张/1000元），跳过')
         return
-    bid = get_bid_price(code)
-    if not bid:
-        logger.warning(f'未获取到 {code} 买1价，跳过下单')
-        return
-    logger.info(f'可用资金 {cash:.2f} 元，委托 {code} 数量 {volume} 张（{volume * REPO_FACE} 元面值）')
-    place_order(xt_trader, code, 'sell', bid, volume, remark='qmt auto', unit='张')
+    logger.info(f'可用资金 {cash:.2f} 元，委托 {code} 数量 {volume} 张（{volume * REPO_FACE} 元面值），买1价卖出')
+    # 卖逆回购对手方是买方，直接用 BUY1_PRICE（买1价）委托，无需传价格
+    place_order(xt_trader, code, 'sell', 0, volume, remark='qmt auto', unit='张',
+                price_type=xtconstant.BUY1_PRICE)
 
 
 def scheduled_repo():
