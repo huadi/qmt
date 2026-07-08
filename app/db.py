@@ -5,6 +5,8 @@
 使用 SQLAlchemy 2.x ORM 统一管理 SQLite 连接与 stocks 表操作。
 """
 import os
+import datetime
+from typing import Optional
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
@@ -32,6 +34,25 @@ class Stock(Base):
 
     def __repr__(self):
         return f'<Stock(name={self.name!r}, code={self.code!r})>'
+
+
+class Watch(Base):
+    """股价监控规则"""
+    __tablename__ = 'watches'
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(nullable=False)
+    code: Mapped[str] = mapped_column(nullable=False, index=True)
+    above_price: Mapped[Optional[float]] = mapped_column(comment='上涨触发价，None表示不监控')
+    below_price: Mapped[Optional[float]] = mapped_column(comment='下跌触发价，None表示不监控')
+    above_triggered: Mapped[bool] = mapped_column(default=False, comment='上涨阈值是否已触发')
+    below_triggered: Mapped[bool] = mapped_column(default=False, comment='下跌阈值是否已触发')
+    above_triggered_at: Mapped[Optional[datetime.datetime]] = mapped_column(comment='上涨触发时间')
+    below_triggered_at: Mapped[Optional[datetime.datetime]] = mapped_column(comment='下跌触发时间')
+    created_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.now)
+
+    def __repr__(self):
+        return f'<Watch(id={self.id}, name={self.name!r}, code={self.code!r}, above={self.above_price}, below={self.below_price})>'
 
 
 def init_db():

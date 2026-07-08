@@ -10,6 +10,11 @@ app 包入口，支持 `python -m app` 运行。
     python -m app trade sell 隆基绿能 12.40 800
     python -m app serve                        # daemon：常驻运行，定时任务 + 回调
     python -m app repo --now                   # 立即执行一次逆回购（测试/手动）
+    python -m app watch add 隆基绿能 15.0 10.0  # 添加股价监控（涨破15或跌破10通知）
+    python -m app watch list                   # 查看所有监控规则
+    python -m app watch delete 1               # 删除ID为1的监控
+    python -m app watch reset 1                # 重置ID为1的触发状态
+    python -m app watch now                    # 立即执行一次股价检查（测试）
 """
 import os
 import sys
@@ -46,6 +51,10 @@ def main():
     p_repo = sub.add_parser('repo', help='国债逆回购（立即执行一次）')
     p_repo.add_argument('--now', action='store_true', help='立即下单（默认行为，保留兼容）')
 
+    # watch 子命令（股价监控管理）
+    p_watch = sub.add_parser('watch', help='股价监控管理')
+    p_watch.add_argument('args', nargs=argparse.REMAINDER, help='子命令参数: add/list/delete/reset/now')
+
     # serve 子命令（daemon 模式）
     sub.add_parser('serve', help='启动常驻服务（定时任务 + 回调）')
 
@@ -67,6 +76,9 @@ def main():
     elif args.command == 'repo':
         from .repo import main as repo_main
         repo_main(['--now'] if args.now else [])
+    elif args.command == 'watch':
+        from .watch import main as watch_main
+        watch_main(args.args)
     elif args.command == 'serve':
         _serve()
     else:
@@ -83,6 +95,7 @@ def _serve():
 
     from .qmt import connect, disconnect
     from .repo import scheduled_repo, SCHEDULE_TIME
+    from .watch import scheduled_watch
 
     # 1. 建立共享 QMT 连接（单例，供所有定时任务与回调复用）
     xt_trader = connect()
@@ -112,8 +125,17 @@ def _serve():
         id='repo_daily',
         misfire_grace_time=120,
     )
+    # 股价监控：周一到周五 9-11点、13-15点 每分钟执行，非交易时段在函数内跳过
+    scheduler.add_job(
+        scheduled_watch,
+        CronTrigger(day_of_week='mon-fri', hour='9-11,13-15', minute='*', second='0'),
+        id='price_watch',
+        misfire_grace_time=30,
+        coalesce=True,
+    )
     scheduler.start()
     logger.info('定时任务已启动，每个交易日 %02d:%02d 自动执行逆回购', *SCHEDULE_TIME)
+    logger.info('股价监控已启动，交易时段（9:30-11:30/13:00-15:00）每分钟检查一次价格')
     logger.info('daemon 运行中，按 Ctrl+C 退出')
 
     # 3. 阻塞主线程；未来在此注册 QMT 回调（行情订阅、订单回报、通知推送）

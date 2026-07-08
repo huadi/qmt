@@ -103,10 +103,9 @@ def place_order(xt_trader, code, direction, price, volume, remark='手动下单'
         price_type = xtconstant.FIX_PRICE
     price_type_name = {
         xtconstant.FIX_PRICE: '限价',
-        xtconstant.BUY1_PRICE: '买1价',
-        xtconstant.SELL1_PRICE: '卖1价',
         xtconstant.LATEST_PRICE: '最新价',
-        xtconstant.MARKET_BEST_PRICE: '对手方最优',
+        xtconstant.MARKET_PEER_PRICE_FIRST: '对手方最优',
+        xtconstant.MARKET_MINE_PRICE_FIRST: '本方最优',
     }.get(price_type, f'type{price_type}')
     price_str = f'{price}' if price_type == xtconstant.FIX_PRICE else price_type_name
     logger.info(f'{action} {code} 价格 {price_str} 数量 {volume}{unit} ...')
