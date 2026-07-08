@@ -81,7 +81,7 @@ def resolve_code(name_or_code):
         logger.warning(f'匹配到多个股票: {[r[0] for r in rows]}，请用更精确的名称')
         sys.exit(1)
 
-    raise ValueError(f'未找到股票: {name_or_code}，请运行 `python -m app init` 初始化数据库')
+    raise ValueError(f'未找到股票: {name_or_code}，请运行 `python -m app init-db` 初始化数据库')
 
 
 def place_order(xt_trader, code, direction, price, volume, remark='手动下单', price_type=None):

@@ -5,7 +5,7 @@ app 包入口，支持 `python -m app` 运行。
 负责运行时初始化（sys.path）和子命令派发。
 
 用法:
-    python -m app init                        # 初始化 db（刷新股票名称到数据库）
+    python -m app init-db                     # 初始化数据库（刷新股票名称到数据库）
     python -m app trade buy  隆基绿能 12.40 800
     python -m app trade sell 隆基绿能 12.40 800
     python -m app serve                        # daemon：常驻运行，定时任务 + 回调
@@ -38,8 +38,8 @@ def main():
     parser = argparse.ArgumentParser(prog='python -m app', description='QMT 交易工具')
     sub = parser.add_subparsers(dest='command')
 
-    # init 子命令
-    sub.add_parser('init', help='初始化数据库（刷新股票名称）')
+    # init-db 子命令
+    sub.add_parser('init-db', help='初始化数据库（刷新股票名称缓存）')
 
     # trade 子命令
     p_trade = sub.add_parser('trade', help='手动下单')
@@ -61,7 +61,7 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == 'init':
+    if args.command == 'init-db':
         from .trade import build_name_cache
         from .db import init_db
         init_db()
@@ -88,15 +88,38 @@ def main():
 
 def _serve():
     """daemon 模式：建立共享连接 + 启动后台调度器 + 阻塞主线程（24h 常驻）"""
+    import os
     import threading
     import time
+    import logging
+    from logging.handlers import RotatingFileHandler
     from apscheduler.schedulers.background import BackgroundScheduler
     from apscheduler.triggers.cron import CronTrigger
     from xtquant.xttype import StockAccount
 
+    from .db import init_db
     from .qmt import connect, disconnect
     from .repo import scheduled_repo, SCHEDULE_TIME
     from .watch import scheduled_watch
+
+    # 0. 统一初始化数据库表结构
+    init_db()
+
+    # 配置 apscheduler 日志输出到文件，不输出到 stdout
+    os.makedirs('logs', exist_ok=True)
+    scheduler_logger = logging.getLogger('apscheduler')
+    scheduler_logger.setLevel(logging.INFO)
+    # 避免传播到 root logger（防止输出到 stdout）
+    scheduler_logger.propagate = False
+    # 添加轮转文件处理器，单个文件最大 10MB，保留 5 个备份
+    scheduler_handler = RotatingFileHandler(
+        'logs/scheduler.log',
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding='utf-8'
+    )
+    scheduler_handler.setFormatter(logging.Formatter('%(asctime)s [%(name)s] %(levelname)s: %(message)s'))
+    scheduler_logger.addHandler(scheduler_handler)
 
     # 1. 建立共享 QMT 连接（单例，供所有定时任务与回调复用）
     xt_trader = connect()

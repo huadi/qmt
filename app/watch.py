@@ -65,7 +65,6 @@ def add_watch(name_or_code: str, below_price: float, above_price: float) -> Watc
         stock = s.scalar(select(Stock).where(Stock.code == code))
         name = stock.name if stock else name_or_code
 
-    init_db()
     watch = Watch(name=name, code=code, above_price=above, below_price=below)
     with SessionLocal() as s:
         s.add(watch)
@@ -77,14 +76,12 @@ def add_watch(name_or_code: str, below_price: float, above_price: float) -> Watc
 
 def list_watches() -> list[Watch]:
     """返回所有监控规则"""
-    init_db()
     with SessionLocal() as s:
         return list(s.scalars(select(Watch).order_by(Watch.id)))
 
 
 def delete_watch(watch_id: int) -> bool:
     """删除指定 id 的监控规则，返回是否删除成功"""
-    init_db()
     with SessionLocal() as s:
         watch = s.get(Watch, watch_id)
         if watch is None:
@@ -97,7 +94,6 @@ def delete_watch(watch_id: int) -> bool:
 
 def reset_watch(watch_id: int) -> bool:
     """重置指定规则的触发状态，使其可再次触发，返回是否重置成功"""
-    init_db()
     with SessionLocal() as s:
         watch = s.get(Watch, watch_id)
         if watch is None:
@@ -124,7 +120,6 @@ def update_watch(watch_id: int, below_price: float, above_price: float) -> Watch
     if above is None and below is None:
         raise ValueError('上涨触发价和下跌触发价不能同时为空（至少设置一个 >0 的值）')
 
-    init_db()
     with SessionLocal() as s:
         watch = s.get(Watch, watch_id)
         if watch is None:
@@ -154,7 +149,6 @@ def resolve_watch(identifier: str) -> Watch | list[Watch] | None:
     - Watch: 唯一匹配的单条规则
     - list[Watch]: 匹配到多条规则（同一只股票设置了多个监控时出现）
     """
-    init_db()
     # 1. 优先尝试按数字ID匹配
     watch_id = None
     if identifier.isdigit():
@@ -192,7 +186,6 @@ def check_watches():
 
     单只股票异常不影响其他股票的检查。
     """
-    init_db()
     today = datetime.date.today()
     # 查询所有设置了至少一个阈值的监控规则（每日自动重置，无需排除已触发的）
     with SessionLocal() as s:
@@ -341,6 +334,9 @@ def main(argv=None):
     sub.add_parser('now', help='立即执行一次股价检查（测试用）')
 
     args = parser.parse_args(argv)
+
+    # 统一初始化数据库表结构，避免各函数重复调用
+    init_db()
 
     if args.action == 'add':
         w = add_watch(args.name_or_code, args.below_price, args.above_price)

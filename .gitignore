@@ -26,6 +26,7 @@ env/
 stock_names.json
 config.toml
 data/
+logs/
 .eggs/
 dist/
 build/
