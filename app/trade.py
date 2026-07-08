@@ -84,7 +84,7 @@ def resolve_code(name_or_code):
     raise ValueError(f'未找到股票: {name_or_code}，请运行 `python -m app init` 初始化数据库')
 
 
-def place_order(xt_trader, code, direction, price, volume, remark='手动下单', unit='股', price_type=None):
+def place_order(xt_trader, code, direction, price, volume, remark='手动下单', price_type=None):
     """提交委托，返回订单号；失败抛 RuntimeError
 
     price_type: 价格类型，默认限价单（xtconstant.FIX_PRICE）。
@@ -94,6 +94,11 @@ def place_order(xt_trader, code, direction, price, volume, remark='手动下单'
     acc = StockAccount(config.account_id)
     order_type = xtconstant.STOCK_BUY if direction == 'buy' else xtconstant.STOCK_SELL
     action = '买入' if direction == 'buy' else '卖出'
+    # 自动判断单位：逆回购(204xxx.SH/1318xx.SZ)为张，股票为股
+    if code.startswith(('204', '1318')):
+        unit = '张'
+    else:
+        unit = '股'
     if price_type is None:
         price_type = xtconstant.FIX_PRICE
     price_type_name = {

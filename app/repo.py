@@ -182,7 +182,7 @@ def run_repo():
         return
     logger.info(f'可用资金 {cash:.2f} 元，委托 {code} 数量 {volume} 张（{volume * REPO_FACE} 元面值），买1价卖出')
     # 卖逆回购对手方是买方，直接用 BUY1_PRICE（买1价）委托，无需传价格
-    place_order(xt_trader, code, 'sell', 0, volume, remark='qmt auto', unit='张',
+    place_order(xt_trader, code, 'sell', 0, volume, remark='qmt auto',
                 price_type=xtconstant.BUY1_PRICE)
 
 
