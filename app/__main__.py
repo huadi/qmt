@@ -80,20 +80,30 @@ def main():
     args = parser.parse_args()
 
     if args.command == 'init-db':
-        from .trade import build_name_cache
+        from .stockutil import build_name_cache
         from .db import init_db
         init_db()
         build_name_cache()
     elif args.command == 'trade':
-        from .trade import main as trade_main
-        trade_main([
-            args.direction,
-            args.name_or_code,
-            str(args.price),
-            str(args.volume),
-        ])
+        from .db import init_db
+        from .qmt import QmtClient
+        from .stockutil import resolve_code
+        init_db()  # 确保表结构存在，避免首次使用报表不存在
+        code = resolve_code(args.name_or_code)
+        if args.volume <= 0:
+            logger.error('数量必须大于0')
+            sys.exit(1)
+        if args.volume % 100 != 0:
+            logger.warning(f'数量{args.volume}不是100的整数倍, A股需按手(100股)交易')
+        QmtClient.connect()
+        try:
+            order_id = QmtClient.place_order(code, args.direction, args.price, args.volume)
+            time.sleep(1)
+            QmtClient.check_order(order_id, code)
+        except RuntimeError:
+            sys.exit(1)
     elif args.command == 'watch':
-        from .watch import main as watch_main
+        from .strategy.watch import main as watch_main
         watch_main(args.args)
     elif args.command == 'serve':
         _serve()
@@ -107,9 +117,9 @@ def _serve():
     from apscheduler.triggers.cron import CronTrigger
 
     from .db import init_db
-    from .qmt import connect, disconnect, get_account
-    from .repo import scheduled_repo, SCHEDULE_TIME
-    from .watch import scheduled_watch
+    from .qmt import QmtClient
+    from .strategy.repo import scheduled_repo, SCHEDULE_TIME
+    from .strategy.watch import scheduled_watch, SCHEDULE_HOURS
 
     # 0. 统一初始化数据库表结构
     init_db()
@@ -117,13 +127,12 @@ def _serve():
     _setup_scheduler_logging()
 
     # 1. 建立共享 QMT 连接（单例，供所有定时任务与回调复用）
-    xt_trader = connect()
-    acc = get_account()
+    QmtClient.connect()
 
     # 查询并打印账户资金（连接刚建立，少量重试等待数据同步）
     asset = None
     for _ in range(3):
-        asset = xt_trader.query_stock_asset(acc)
+        asset = QmtClient.query_stock_asset()
         if asset is not None:
             break
         time.sleep(0.5)
@@ -136,18 +145,18 @@ def _serve():
     else:
         logger.warning('查询账户 %s 资金失败', config.account_id)
 
-    # 2. 启动后台调度器，注册定时任务
-    scheduler = BackgroundScheduler(timezone='Asia/Shanghai')
+    # 2. 启动后台调度器，注册定时任务（使用系统默认时区，部署时确保系统时区与交易所一致）
+    scheduler = BackgroundScheduler()
     scheduler.add_job(
         scheduled_repo,
         CronTrigger(day_of_week='mon-fri', hour=SCHEDULE_TIME[0], minute=SCHEDULE_TIME[1]),
         id='repo_daily',
         misfire_grace_time=120,
     )
-    # 股价监控：周一到周五 9-11点、13-15点 每分钟执行，非交易时段在函数内跳过
+    # 股价监控：周一到周五交易时段每分钟执行，非交易时段在函数内跳过
     scheduler.add_job(
         scheduled_watch,
-        CronTrigger(day_of_week='mon-fri', hour='9-11,13-15', minute='*', second='0'),
+        CronTrigger(day_of_week='mon-fri', hour=SCHEDULE_HOURS, minute='*', second='0'),
         id='price_watch',
         misfire_grace_time=30,
         coalesce=True,
@@ -158,7 +167,7 @@ def _serve():
     logger.info('daemon 运行中，按 Ctrl+C 退出')
 
     # 3. 阻塞主线程；未来在此注册 QMT 回调（行情订阅、订单回报、通知推送）
-    #    xt_trader.register_callback(...) / xtdata.subscribe_quote(...)
+    #    QmtClient.register_callback(...) / QmtClient.subscribe_quote(...)
     #
     #    注意：threading.Event().wait() 不带超时时在 Windows 上无法被
     #    Ctrl+C 打断，必须给一个超时值（哪怕很大），让主线程周期性返回
@@ -171,7 +180,7 @@ def _serve():
         logger.info('正在停止 daemon...')
     finally:
         scheduler.shutdown(wait=False)
-        disconnect()
+        QmtClient.disconnect()
         logger.info('已退出')
 
 

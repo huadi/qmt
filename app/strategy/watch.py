@@ -23,16 +23,24 @@ import argparse
 
 from sqlalchemy import select
 
-from .qmt import connect, xtdata
-from .db import Watch, Stock, SessionLocal, init_db
-from .trade import resolve_code
-from .calendar import is_trading_day, is_trading_time, today_sh, now_sh
-from .notify import send as notify_send
+from ..qmt import QmtClient
+from ..db import Watch, Stock, SessionLocal, init_db
+from ..stockutil import resolve_code
+from ..tradeutil import is_trading_day, is_trading_time
+from ..notify import send as notify_send
 
 logger = logging.getLogger(__name__)
 
-# 已通过 xtdata.subscribe_quote 订阅的代码集合，避免每分钟重复订阅
+# 调度参数：交易时段每分钟检查一次（周一到周五）。小时范围覆盖沪深两市交易时段，
+# 由 __main__._serve 注册 cron 时引用，策略自带调度参数（与 repo.SCHEDULE_TIME 对齐）。
+SCHEDULE_HOURS = '9-11,13-15'
+
+# 已通过 QmtClient.subscribe_quote 订阅的代码集合，避免每分钟重复订阅。
+# 每天换日时清空一次强制重订阅：既能跨天恢复行情推送（防止 QMT 中途重连后
+# 本进程仍以为已订阅而哑掉），又控制了订阅 seq 的日内堆积。即使某天重连未
+# 及时恢复，最多当天监控失效，次日自动恢复——对阈值提醒足够稳健。
 _subscribed: set[str] = set()
+_subscribed_date: datetime.date | None = None
 
 
 # ============================================================
@@ -183,7 +191,15 @@ def check_watches():
     (3) 提交成功后才发送钉钉通知，避免"已通知但未落库"导致重复提醒。
     单只股票行情异常不影响其他股票。
     """
-    today = today_sh()
+    today = datetime.date.today()
+
+    # 换日清空订阅集合：跨天强制重订阅，恢复因 QMT 重连丢失的行情推送
+    global _subscribed_date
+    if _subscribed_date != today:
+        if _subscribed_date is not None:
+            logger.info('换日，清空行情订阅集合，本轮将重新订阅 %d 只股票', len(_subscribed))
+        _subscribed.clear()
+        _subscribed_date = today
 
     with SessionLocal() as s:
         watches = list(s.scalars(
@@ -203,7 +219,7 @@ def check_watches():
     new_codes = [c for c in codes if c not in _subscribed]
     for code in new_codes:
         try:
-            xtdata.subscribe_quote(code)
+            QmtClient.subscribe_quote(code)
             _subscribed.add(code)
         except Exception as e:
             logger.warning(f'订阅 {code} 行情失败: {e}')
@@ -211,12 +227,12 @@ def check_watches():
         time.sleep(0.3)  # 首次订阅后等待数据推送；已订阅的数据已在本地缓存，无需再等
 
     try:
-        ticks = xtdata.get_full_tick(codes) or {}
+        ticks = QmtClient.get_full_tick(codes) or {}
     except Exception as e:
         logger.error(f'获取行情失败: {e}')
         return
 
-    now = now_sh()
+    now = datetime.datetime.now()
 
     # 阶段 1：基于快照粗筛本轮"可能触发"的规则（不写 DB）
     candidates: dict[int, dict] = {}  # watch_id -> info
@@ -379,7 +395,7 @@ def main(argv=None):
         if not watches:
             print('暂无监控规则')
         else:
-            today = today_sh()
+            today = datetime.date.today()
             print(f'{"ID":<4} {"股票名称":<10} {"代码":<12} {"下跌阈值":<10} {"上涨阈值":<10} {"今日跌破已通知":<14} {"今日涨破已通知":<14} {"创建时间":<20}')
             print('-' * 105)
             for w in watches:
@@ -409,7 +425,7 @@ def main(argv=None):
                 return
             print(f'已更新监控: {_fmt_watch_brief(w)}，触发状态已自动重置')
     elif args.action == 'now':
-        connect()
+        QmtClient.connect()
         check_watches()
     else:
         parser.print_help()

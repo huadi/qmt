@@ -6,6 +6,9 @@ Desktop.ini
 $RECYCLE.BIN/
 *.lnk
 
+# ===== Claude Code (local agent config) =====
+.claude/
+
 # ===== IntelliJ IDEA / PyCharm =====
 .idea/
 *.iml

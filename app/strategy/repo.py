@@ -17,9 +17,8 @@ import time
 import datetime
 import logging
 
-from .qmt import connect, xtdata, xtconstant, get_account
-from .trade import place_order
-from .calendar import is_trading_day
+from ..qmt import QmtClient, xtconstant
+from ..tradeutil import is_trading_day
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +44,7 @@ def get_repo_rates():
     # 订阅行情以确保能获取实时数据
     for code in REPO_CODES:
         try:
-            xtdata.subscribe_quote(code)
+            QmtClient.subscribe_quote(code)
         except Exception:
             pass
     time.sleep(0.5)
@@ -53,7 +52,7 @@ def get_repo_rates():
     rates = {}
     # 方式1: get_full_tick
     try:
-        ticks = xtdata.get_full_tick(REPO_CODES)
+        ticks = QmtClient.get_full_tick(REPO_CODES)
         for code in REPO_CODES:
             tick = (ticks or {}).get(code)
             if tick:
@@ -68,8 +67,8 @@ def get_repo_rates():
         if code in rates:
             continue
         try:
-            xtdata.download_history_data(code, 'tick')
-            result = xtdata.get_market_data_ex([], [code], period='tick', count=1)
+            QmtClient.download_history_data(code, 'tick')
+            result = QmtClient.get_market_data_ex([], [code], period='tick', count=1)
             data = result[0] if isinstance(result, tuple) else result
             df = data.get(code)
             if df is not None and len(df) > 0:
@@ -107,10 +106,9 @@ def select_market(rates):
 #  资金查询与数量计算
 # ============================================================
 
-def get_available_cash(xt_trader):
+def get_available_cash():
     """查询账户可用资金（元）"""
-    acc = get_account()
-    asset = xt_trader.query_stock_asset(acc)
+    asset = QmtClient.query_stock_asset()
     if asset is None:
         raise Exception('查询账户资产失败')
     cash = getattr(asset, 'cash', None)
@@ -145,17 +143,16 @@ def run_repo():
     使用共享的 QMT 连接（单例），不负责连接的建立与断开。
     使用 xtconstant.BUY1_PRICE 直接以买1价委托，无需提前查询行情，避免下单时点价差。
     """
-    xt_trader = connect()
     rates = get_repo_rates()
     code, rate = select_market(rates)
-    cash = get_available_cash(xt_trader)
+    cash = get_available_cash()
     volume = calc_repo_volume(cash)
     if volume <= 0:
         logger.warning(f'可用资金 {cash:.2f} 元不足下单 {code} 最小单位（10张/1000元），跳过')
         return
     logger.info(f'可用资金 {cash:.2f} 元，委托 {code} 数量 {volume} 张（{volume * REPO_FACE} 元面值），对手方最优价（买1价）卖出')
     # 卖逆回购对手方是买方，MARKET_PEER_PRICE_FIRST 即对手方最优价格（卖出时为买1价），无需传价格
-    place_order(xt_trader, code, 'sell', 0, volume, remark='qmt auto',
+    QmtClient.place_order(code, 'sell', 0, volume, remark='qmt auto',
                 price_type=xtconstant.MARKET_PEER_PRICE_FIRST)
 
 
