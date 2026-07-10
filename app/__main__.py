@@ -69,13 +69,15 @@ def main():
     p_trade.add_argument('name_or_code', help='股票名称或6位代码')
     p_trade.add_argument('price', type=float, help='委托价格')
     p_trade.add_argument('volume', type=int, help='委托数量(股)')
+    p_trade.add_argument('--sim', action='store_true', help='连接模拟盘（券商模拟撮合，不产生真实成交）')
 
     # watch 子命令（股价监控管理）
     p_watch = sub.add_parser('watch', help='股价监控管理')
     p_watch.add_argument('args', nargs=argparse.REMAINDER, help='子命令参数: add/list/delete/reset/now')
 
     # serve 子命令（daemon 模式）
-    sub.add_parser('serve', help='启动常驻服务（定时任务 + 回调）')
+    p_serve = sub.add_parser('serve', help='启动常驻服务（定时任务 + 回调）')
+    p_serve.add_argument('--sim', action='store_true', help='连接模拟盘运行 daemon')
 
     args = parser.parse_args()
 
@@ -95,7 +97,7 @@ def main():
             sys.exit(1)
         if args.volume % 100 != 0:
             logger.warning(f'数量{args.volume}不是100的整数倍, A股需按手(100股)交易')
-        QmtClient.connect()
+        QmtClient.connect(mode='sim' if args.sim else 'live')
         try:
             order_id = QmtClient.place_order(code, args.direction, args.price, args.volume)
             time.sleep(1)
@@ -106,13 +108,16 @@ def main():
         from .strategy.watch import main as watch_main
         watch_main(args.args)
     elif args.command == 'serve':
-        _serve()
+        _serve(sim=args.sim)
     else:
         parser.print_help()
 
 
-def _serve():
-    """daemon 模式：建立共享连接 + 启动后台调度器 + 阻塞主线程（24h 常驻）"""
+def _serve(sim=False):
+    """daemon 模式：建立共享连接 + 启动后台调度器 + 阻塞主线程（24h 常驻）
+
+    sim=True 时连接券商模拟终端（不产生真实成交）。
+    """
     from apscheduler.schedulers.background import BackgroundScheduler
     from apscheduler.triggers.cron import CronTrigger
 
@@ -127,7 +132,7 @@ def _serve():
     _setup_scheduler_logging()
 
     # 1. 建立共享 QMT 连接（单例，供所有定时任务与回调复用）
-    QmtClient.connect()
+    QmtClient.connect(mode='sim' if sim else 'live')
 
     # 查询并打印账户资金（连接刚建立，少量重试等待数据同步）
     asset = None

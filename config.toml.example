@@ -3,6 +3,11 @@
 account_id = "你的资金账号"
 mini_path = r"C:\迅投极速策略交易系统交易终端 太平洋证券QMT实盘\userdata_mini"
 
+# 模拟盘（可选；trade/serve 加 --sim 时连接此终端，走券商模拟撮合，不产生真实成交）
+[qmt.sim]
+account_id = "你的模拟资金账号"
+mini_path = r"C:\迅投极速策略交易系统交易终端 太平洋证券QMT模拟\userdata_mini"
+
 # 钉钉机器人通知配置
 [notify]
 dingtalk_token = "你的钉钉机器人 access_token"

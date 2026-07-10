@@ -23,6 +23,9 @@ class Config:
     account_id: str
     mini_path: str
     dingtalk_token: str = ''
+    # 模拟盘（可选）：未配置时 SimQmtClient.connect() 会抛 RuntimeError
+    sim_account_id: str = ''
+    sim_mini_path: str = ''
 
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -34,10 +37,13 @@ with open(_CONFIG_FILE, 'rb') as _f:
     _cfg = tomllib.load(_f)
 
 _qmt = _cfg['qmt']
+_sim = _qmt.get('sim', {})
 _notify = _cfg.get('notify', {})
 
 config = Config(
     account_id=_qmt['account_id'],
     mini_path=_qmt['mini_path'],
     dingtalk_token=_notify.get('dingtalk_token', ''),
+    sim_account_id=_sim.get('account_id', ''),
+    sim_mini_path=_sim.get('mini_path', ''),
 )
