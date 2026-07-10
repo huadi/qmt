@@ -58,6 +58,9 @@ def _setup_scheduler_logging() -> None:
 
 def main():
     parser = argparse.ArgumentParser(prog='python -m app', description='QMT 交易工具')
+    # 全局开关：放在顶层 parser 上，必须出现在子命令之前（python -m app --sim trade ...）
+    # 不能同时放在子 parser 上：子 parser 的默认值 False 会覆盖顶层已解析的 True
+    parser.add_argument('--sim', action='store_true', help='连接模拟盘（券商模拟撮合，不产生真实成交），须置于子命令之前')
     sub = parser.add_subparsers(dest='command')
 
     # init-db 子命令
@@ -69,15 +72,13 @@ def main():
     p_trade.add_argument('name_or_code', help='股票名称或6位代码')
     p_trade.add_argument('price', type=float, help='委托价格')
     p_trade.add_argument('volume', type=int, help='委托数量(股)')
-    p_trade.add_argument('--sim', action='store_true', help='连接模拟盘（券商模拟撮合，不产生真实成交）')
 
     # watch 子命令（股价监控管理）
     p_watch = sub.add_parser('watch', help='股价监控管理')
     p_watch.add_argument('args', nargs=argparse.REMAINDER, help='子命令参数: add/list/delete/reset/now')
 
     # serve 子命令（daemon 模式）
-    p_serve = sub.add_parser('serve', help='启动常驻服务（定时任务 + 回调）')
-    p_serve.add_argument('--sim', action='store_true', help='连接模拟盘运行 daemon')
+    sub.add_parser('serve', help='启动常驻服务（定时任务 + 回调）')
 
     args = parser.parse_args()
 
